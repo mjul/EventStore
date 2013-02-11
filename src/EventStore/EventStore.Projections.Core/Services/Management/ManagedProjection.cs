@@ -37,6 +37,7 @@ using EventStore.Core.Services.TimerService;
 using EventStore.Projections.Core.Messages;
 using EventStore.Projections.Core.Services.Processing;
 using EventStore.Projections.Core.Utils;
+using Newtonsoft.Json;
 using ReadStreamResult = EventStore.Core.Data.ReadStreamResult;
 
 namespace EventStore.Projections.Core.Services.Management
@@ -53,7 +54,14 @@ namespace EventStore.Projections.Core.Services.Management
             public ProjectionMode Mode { get; set; }
             public bool Enabled { get; set; }
             public bool Deleted { get; set; }
-            public ProjectionSourceDefintion SourceDefintion { get; set; }
+
+            [Obsolete]
+            public ProjectionSourceDefinition SourceDefintion
+            {
+                set { SourceDefinition = value; }
+            }
+
+            public ProjectionSourceDefinition SourceDefinition { get; set; }
             public bool? EmitEnabled { get; set; }
             public bool? CreateTempStreams { get; set; }
             public bool? CheckpointsDisabled { get; set; }
@@ -304,7 +312,7 @@ namespace EventStore.Projections.Core.Services.Management
             if (_state == ManagedProjectionState.Preparing)
             {
                 // cannot prepare - thus we don't know source defintion
-                _persistedState.SourceDefintion = null;
+                _persistedState.SourceDefinition = null;
                 OnPrepared();
             }
             FireStoppedOrFaulted();
@@ -313,7 +321,7 @@ namespace EventStore.Projections.Core.Services.Management
         public void Handle(CoreProjectionManagementMessage.Prepared message)
         {
             _state = ManagedProjectionState.Prepared;
-            _persistedState.SourceDefintion = message.SourceDefintion;
+            _persistedState.SourceDefinition = message.SourceDefinition;
             OnPrepared();
         }
 
@@ -629,14 +637,14 @@ namespace EventStore.Projections.Core.Services.Management
 
             //TODO: load configuration from the definition
 
-            if (_persistedState.SourceDefintion == null)
+            if (_persistedState.SourceDefinition == null)
                 throw new Exception(
                     "The projection cannot be loaded as stopped as it was stored in the old format.  Update the projection query text to force prepare");
 
             var createProjectionMessage =
                 new CoreProjectionManagementMessage.CreatePrepared(
                     new PublishEnvelope(_inputQueue), _id, _name, config,
-                    new SourceDefinition(_persistedState.SourceDefintion));
+                    new SourceDefinition(_persistedState.SourceDefinition));
 
             //note: set running before start as coreProjection.start() can respond with faulted
             _state = ManagedProjectionState.Preparing;
@@ -762,9 +770,9 @@ namespace EventStore.Projections.Core.Services.Management
 
     class SourceDefinition : ISourceDefinitionConfigurator
     {
-        private readonly ProjectionSourceDefintion _sourceDefinition;
+        private readonly ProjectionSourceDefinition _sourceDefinition;
 
-        public SourceDefinition(ProjectionSourceDefintion sourceDefinition)
+        public SourceDefinition(ProjectionSourceDefinition sourceDefinition)
         {
             if (sourceDefinition == null) throw new ArgumentNullException("sourceDefinition");
 
@@ -810,6 +818,9 @@ namespace EventStore.Projections.Core.Services.Management
 
             if (_sourceDefinition.Options != null)
                 builder.SetEmitStateUpdated(_sourceDefinition.Options.EmitStateUpdated);
+
+            if (_sourceDefinition.DefinesStateTransform)
+                builder.SetDefinesStateTransform();
         }
     }
 }

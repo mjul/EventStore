@@ -53,7 +53,7 @@ namespace EventStore.Projections.Core.Tests.Services.projections_manager
                     ""Mode"":""3"", 
                     ""Enabled"":false, 
                     ""HandlerType"":""JS"",
-                    ""SourceDefintion"":{
+                    ""SourceDefinition"":{
                         ""AllEvents"":true,
                         ""AllStreams"":true,
                     }
