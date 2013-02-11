@@ -307,10 +307,6 @@ namespace EventStore.Projections.Core.v8
             [DataMember(Name = "processingLag")]
             public int? ProcessingLag { get; set; }
 
-            [DataMember(Name = "emitStateUpdated")]
-            public bool EmitStateUpdated { get; set; }
-
-
         }
     }
 }

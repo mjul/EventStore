@@ -53,7 +53,6 @@ namespace EventStore.Projections.Core.Services.Processing
         private readonly PositionTagger _positionTagger;
         protected readonly ProjectionNamesBuilder _namingBuilder;
         private readonly bool _useCheckpoints;
-        private readonly bool _emitStateUpdated;
         private readonly bool _emitPartitionCheckpoints;
         protected readonly ILogger _logger;
 
@@ -88,7 +87,7 @@ namespace EventStore.Projections.Core.Services.Processing
             RequestResponseDispatcher<ClientMessage.ReadStreamEventsBackward, ClientMessage.ReadStreamEventsBackwardCompleted> readDispatcher,
             RequestResponseDispatcher<ClientMessage.WriteEvents, ClientMessage.WriteEventsCompleted> writeDispatcher,
             ProjectionConfig projectionConfig, string name, PositionTagger positionTagger,
-            ProjectionNamesBuilder namingBuilder, bool useCheckpoints, bool emitStateUpdated,
+            ProjectionNamesBuilder namingBuilder, bool useCheckpoints,
             bool emitPartitionCheckpoints)
         {
             if (coreProjection == null) throw new ArgumentNullException("coreProjection");
@@ -101,8 +100,6 @@ namespace EventStore.Projections.Core.Services.Processing
             if (namingBuilder == null) throw new ArgumentNullException("namingBuilder");
             if (name == "") throw new ArgumentException("name");
 
-            if (emitPartitionCheckpoints && emitStateUpdated)
-                throw new InvalidOperationException("EmitPartitionCheckpoints && EmitStateUpdated cannot be both set");
             _lastProcessedEventPosition = new PositionTracker(positionTagger);
             _coreProjection = coreProjection;
             _publisher = publisher;
@@ -115,7 +112,6 @@ namespace EventStore.Projections.Core.Services.Processing
             _positionTagger = positionTagger;
             _namingBuilder = namingBuilder;
             _useCheckpoints = useCheckpoints;
-            _emitStateUpdated = emitStateUpdated;
             _emitPartitionCheckpoints = emitPartitionCheckpoints;
         }
 
@@ -230,8 +226,7 @@ namespace EventStore.Projections.Core.Services.Processing
 
         public void StateUpdated(string partition, PartitionStateCache.State oldState, PartitionStateCache.State newState)
         {
-            if (_emitStateUpdated)
-                EmitStateUpdatedEventsIfAny(partition, oldState, newState);
+                //EmitStateUpdatedEventsIfAny(partition, oldState, newState);
             if (_emitPartitionCheckpoints && partition != "")
                 CapturePartitionStateUpdated(partition, oldState, newState);
             if (partition == "" && newState != null) // ignore non-root partitions and non-changed states
@@ -431,6 +426,7 @@ namespace EventStore.Projections.Core.Services.Processing
             RequestRestart(message.Reason);
         }
 
+/*
         private void EmitStateUpdatedEventsIfAny(string partition, PartitionStateCache.State oldState, PartitionStateCache.State newState)
         {
             if (_emitStateUpdated && newState != null)
@@ -442,6 +438,7 @@ namespace EventStore.Projections.Core.Services.Processing
                     EventsEmitted(stateUpdatedEvents.ToArray());
             }
         }
+*/
 
         private static List<EmittedEvent> CreateStateUpdatedEvents(ProjectionNamesBuilder projectionNamesBuilder, CheckpointTag zeroCheckpointTag, string partition, PartitionStateCache.State oldState, PartitionStateCache.State newState)
         {
