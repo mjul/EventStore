@@ -28,6 +28,7 @@
 
 using System.Text;
 using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 using Newtonsoft.Json.Serialization;
 
 namespace EventStore.Projections.Core
@@ -54,6 +55,12 @@ namespace EventStore.Projections.Core
         public static string ToJson(this object source)
         {
             string instring = JsonConvert.SerializeObject(source, Formatting.Indented, JsonSettings);
+            return instring;
+        }
+
+        public static string ToCanonicalJson(this object source)
+        {
+            string instring = JsonConvert.SerializeObject(source);
             return instring;
         }
 
