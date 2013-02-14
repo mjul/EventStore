@@ -258,6 +258,11 @@ namespace EventStore.ClientAPI
             return SendGet(endPoint.ToHttpUrl("/projection/{0}/state", name), HttpStatusCode.OK);
         }
 
+        public Task<string> GetResult(IPEndPoint endPoint, string name)
+        {
+            return SendGet(endPoint.ToHttpUrl("/projection/{0}/result", name), HttpStatusCode.OK);
+        }
+
         public Task<string> GetStatistics(IPEndPoint endPoint, string name)
         {
             return SendGet(endPoint.ToHttpUrl("/projection/{0}/statistics", name), HttpStatusCode.OK);

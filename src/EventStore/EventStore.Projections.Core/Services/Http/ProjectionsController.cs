@@ -132,12 +132,12 @@ namespace EventStore.Projections.Core.Services.Http
                 OnProjectionDebugGet);
             service.RegisterControllerAction(
                 new ControllerAction(
-                    "/projection/{name}/state", HttpMethod.Get, Codec.NoCodecs, SupportedCodecs, DefaultResponseCodec),
-                OnProjectionStateGet);
-            service.RegisterControllerAction(
-                new ControllerAction(
                     "/projection/{name}/state?partition={partition}", HttpMethod.Get, Codec.NoCodecs, SupportedCodecs,
                     DefaultResponseCodec), OnProjectionStateGet);
+            service.RegisterControllerAction(
+                new ControllerAction(
+                    "/projection/{name}/result?partition={partition}", HttpMethod.Get, Codec.NoCodecs, SupportedCodecs,
+                    DefaultResponseCodec), OnProjectionResultGet);
             service.RegisterControllerAction(
                 new ControllerAction(
                     "/projection/{name}/command/disable", HttpMethod.Post, new ICodec[] {Codec.ManualEncoding},
@@ -276,6 +276,15 @@ namespace EventStore.Projections.Core.Services.Http
                     envelope, match.BoundVariables["name"], match.BoundVariables["partition"] ?? ""));
         }
 
+        private void OnProjectionResultGet(HttpEntity http, UriTemplateMatch match)
+        {
+            var envelope = new SendToHttpEnvelope<ProjectionManagementMessage.ProjectionResult>(
+                _networkSendQueue, http, ResultFormatter, ResultConfigurator, ErrorsEnvelope(http));
+            Publish(
+                new ProjectionManagementMessage.GetResult(
+                    envelope, match.BoundVariables["name"], match.BoundVariables["partition"] ?? ""));
+        }
+
         private void OnProjectionDebugGet(HttpEntity http, UriTemplateMatch match)
         {
             var envelope = new SendToHttpEnvelope<ProjectionManagementMessage.ProjectionDebugState>(
@@ -335,6 +344,14 @@ namespace EventStore.Projections.Core.Services.Http
                 return Configure.OkNoCache("application/json", Encoding.UTF8);
         }
 
+        private ResponseConfiguration ResultConfigurator(ICodec codec, ProjectionManagementMessage.ProjectionResult state)
+        {
+            if (state.Exception != null)
+                return Configure.InternalServerError();
+            else
+                return Configure.OkNoCache("application/json", Encoding.UTF8);
+        }
+
         private ResponseConfiguration DebugStateConfigurator(ICodec codec, ProjectionManagementMessage.ProjectionDebugState state)
         {
             return Configure.OkNoCache("application/json", Encoding.UTF8);
@@ -346,6 +363,14 @@ namespace EventStore.Projections.Core.Services.Http
                 return state.Exception.ToString();
             else
                 return state.State;
+        }
+
+        private string ResultFormatter(ICodec codec, ProjectionManagementMessage.ProjectionResult state)
+        {
+            if (state.Exception != null)
+                return state.Exception.ToString();
+            else
+                return state.Result;
         }
 
         private string DebugStateFormatter(ICodec codec, ProjectionManagementMessage.ProjectionDebugState state)
