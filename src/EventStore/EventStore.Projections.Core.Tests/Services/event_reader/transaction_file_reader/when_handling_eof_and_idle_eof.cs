@@ -56,20 +56,20 @@ namespace EventStore.Projections.Core.Tests.Services.event_reader.transaction_fi
         private FakeTimeProvider _fakeTimeProvider;
 
         [SetUp]
-        public void When()
+        public new void When()
         {
 
             _distibutionPointCorrelationId = Guid.NewGuid();
             _fakeTimeProvider = new FakeTimeProvider();
             _edp = new TransactionFileEventReader(
-                _bus, _distibutionPointCorrelationId, new EventPosition(100, 50), _fakeTimeProvider,
+                _bus, _distibutionPointCorrelationId, null, new TFPos(100, 50), _fakeTimeProvider,
                 deliverEndOfTFPosition: false);
             _edp.Resume();
             _firstEventId = Guid.NewGuid();
             _secondEventId = Guid.NewGuid();
             _edp.Handle(
                 new ClientMessage.ReadAllEventsForwardCompleted(
-                    _distibutionPointCorrelationId, new ReadAllResult(
+                    _distibutionPointCorrelationId, ReadAllResult.Success, null,
                     new[]
                     {
                         new EventStore.Core.Data.ResolvedEvent(
@@ -82,28 +82,28 @@ namespace EventStore.Projections.Core.Tests.Services.event_reader.transaction_fi
                                 2, 150, Guid.NewGuid(), _secondEventId, 150, 0, "b", ExpectedVersion.Any, _fakeTimeProvider.Now,
                                 PrepareFlags.SingleWrite | PrepareFlags.TransactionBegin | PrepareFlags.TransactionEnd,
                                 "event_type1", new byte[] {1}, new byte[] {2}), null, 200), 
-                    }, 100, new TFPos(200, 150), new TFPos(500, -1), new TFPos(100, 50), 500), notModified: false));
+                    }, null, 100, new EventStore.Core.Data.TFPos(200, 150), new EventStore.Core.Data.TFPos(500, -1), new EventStore.Core.Data.TFPos(100, 50), 500));
 
             _edp.Handle(
                 new ClientMessage.ReadAllEventsForwardCompleted(
-                    _distibutionPointCorrelationId,
-                    new ReadAllResult(new EventStore.Core.Data.ResolvedEvent[0], 100, new TFPos(), new TFPos(), new TFPos(), 500), notModified: false));
+                    _distibutionPointCorrelationId, ReadAllResult.Success, null,
+                    new EventStore.Core.Data.ResolvedEvent[0], null, 100, new EventStore.Core.Data.TFPos(), new EventStore.Core.Data.TFPos(), new EventStore.Core.Data.TFPos(), 500));
             _fakeTimeProvider.AddTime(TimeSpan.FromMilliseconds(500));
             _edp.Handle(
                 new ClientMessage.ReadAllEventsForwardCompleted(
-                    _distibutionPointCorrelationId,
-                    new ReadAllResult(new EventStore.Core.Data.ResolvedEvent[0], 100, new TFPos(), new TFPos(), new TFPos(), 500), notModified: false));
+                    _distibutionPointCorrelationId, ReadAllResult.Success, null,
+                    new EventStore.Core.Data.ResolvedEvent[0], null, 100, new EventStore.Core.Data.TFPos(), new EventStore.Core.Data.TFPos(), new EventStore.Core.Data.TFPos(), 500));
         }
 
         [Test]
         public void publishes_event_distribution_idle_messages()
         {
             Assert.AreEqual(
-                2, _consumer.HandledMessages.OfType<ProjectionCoreServiceMessage.EventReaderIdle>().Count());
+                2, _consumer.HandledMessages.OfType<ReaderSubscriptionMessage.EventReaderIdle>().Count());
             var first =
-                _consumer.HandledMessages.OfType<ProjectionCoreServiceMessage.EventReaderIdle>().First();
+                _consumer.HandledMessages.OfType<ReaderSubscriptionMessage.EventReaderIdle>().First();
             var second =
-                _consumer.HandledMessages.OfType<ProjectionCoreServiceMessage.EventReaderIdle>()
+                _consumer.HandledMessages.OfType<ReaderSubscriptionMessage.EventReaderIdle>()
                          .Skip(1)
                          .First();
 

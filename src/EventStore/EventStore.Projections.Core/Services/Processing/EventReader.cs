@@ -26,6 +26,7 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 // 
 using System;
+using System.Security.Principal;
 using EventStore.Common.Log;
 using EventStore.Core.Bus;
 using EventStore.Core.Data;
@@ -34,28 +35,46 @@ using EventStore.Projections.Core.Messages;
 
 namespace EventStore.Projections.Core.Services.Processing
 {
-    public abstract class EventReader : IHandle<ClientMessage.ReadStreamEventsForwardCompleted>,
-                                                   IHandle<ClientMessage.ReadAllEventsForwardCompleted>,
-                                                   IDisposable
+    public abstract class EventReader : IEventReader
     {
-        protected readonly Guid _distibutionPointCorrelationId;
+        protected readonly Guid EventReaderCorrelationId;
+        private readonly IPrincipal _readAs;
         protected readonly IPublisher _publisher;
         protected readonly ILogger _logger = LogManager.GetLoggerFor<EventReader>();
 
         protected readonly bool _stopOnEof;
-        protected bool _paused = true;
-        protected bool _pauseRequested = true;
+        protected readonly int? _stopAfterNEvents;
+        private bool _paused = true;
+        private bool _pauseRequested = true;
         protected bool _disposed;
 
         protected EventReader(
-            IPublisher publisher, Guid distibutionPointCorrelationId, bool stopOnEof)
+            IPublisher publisher, Guid eventReaderCorrelationId, IPrincipal readAs, bool stopOnEof,
+            int? stopAfterNEvents)
         {
             if (publisher == null) throw new ArgumentNullException("publisher");
-            if (distibutionPointCorrelationId == Guid.Empty)
-                throw new ArgumentException("distibutionPointCorrelationId");
+            if (eventReaderCorrelationId == Guid.Empty)
+                throw new ArgumentException("eventReaderCorrelationId");
             _publisher = publisher;
-            _distibutionPointCorrelationId = distibutionPointCorrelationId;
+            EventReaderCorrelationId = eventReaderCorrelationId;
+            _readAs = readAs;
             _stopOnEof = stopOnEof;
+            _stopAfterNEvents = stopAfterNEvents;
+        }
+
+        protected bool PauseRequested
+        {
+            get { return _pauseRequested; }
+        }
+
+        protected bool Paused
+        {
+            get { return _paused; }
+        }
+
+        protected IPrincipal ReadAs
+        {
+            get { return _readAs; }
         }
 
         public void Resume()
@@ -71,8 +90,8 @@ namespace EventStore.Projections.Core.Services.Processing
 
             _paused = false;
             _pauseRequested = false;
-            _logger.Trace("Resuming event distribution {0} at '{1}'", _distibutionPointCorrelationId, FromAsText());
-            RequestEvents();
+//            _logger.Trace("Resuming event distribution {0} at '{1}'", EventReaderCorrelationId, FromAsText());
+            RequestEvents(delay: false);
         }
 
         public void Pause()
@@ -83,35 +102,30 @@ namespace EventStore.Projections.Core.Services.Processing
             _pauseRequested = true;
             if (!AreEventsRequested())
                 _paused = true;
-            _logger.Trace("Pausing event distribution {0} at '{1}'", _distibutionPointCorrelationId, FromAsText());
+//            _logger.Trace("Pausing event distribution {0} at '{1}'", EventReaderCorrelationId, FromAsText());
         }
 
-        public abstract void Handle(ClientMessage.ReadStreamEventsForwardCompleted message);
-        public abstract void Handle(ClientMessage.ReadAllEventsForwardCompleted message);
-
-        public void Dispose()
+        public virtual void Dispose()
         {
             _disposed = true;
         }
 
         protected abstract bool AreEventsRequested();
-        protected abstract string FromAsText();
-        protected abstract void RequestEvents();
-
-        protected ProjectionCoreServiceMessage.Tick CreateTickMessage()
-        {
-            return
-                new ProjectionCoreServiceMessage.Tick(
-                    () => { if (!_paused && !_disposed) RequestEvents(); });
-        }
+        protected abstract void RequestEvents(bool delay);
 
         protected void SendEof()
         {
-            if (_stopOnEof)
+            if (_stopOnEof || _stopAfterNEvents != null)
             {
-                _publisher.Publish(new ProjectionCoreServiceMessage.EventReaderEof(_distibutionPointCorrelationId));
+                _publisher.Publish(new ReaderSubscriptionMessage.EventReaderEof(EventReaderCorrelationId));
                 Dispose();
             }
+        }
+
+        public void SendNotAuthorized()
+        {
+            _publisher.Publish(new ReaderSubscriptionMessage.EventReaderNotAuthorized(EventReaderCorrelationId));
+            Dispose();
         }
 
         protected static long? GetLastCommitPositionFrom(ClientMessage.ReadStreamEventsForwardCompleted msg)
@@ -121,6 +135,16 @@ namespace EventStore.Projections.Core.Services.Processing
                    || msg.Result == ReadStreamResult.StreamDeleted)
                    ? (msg.LastCommitPosition == -1 ? (long?) null : msg.LastCommitPosition)
                         : (long?) null;
+        }
+
+        protected void PauseOrContinueProcessing(bool delay)
+        {
+            if (_disposed)
+                return;
+            if (_pauseRequested)
+                _paused = !AreEventsRequested();
+            else
+                RequestEvents(delay);
         }
     }
 }

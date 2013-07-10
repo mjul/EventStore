@@ -26,6 +26,8 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 // 
 
+using System;
+using System.Collections.Generic;
 using System.Linq;
 using EventStore.Core.Messages;
 using EventStore.Core.Messaging;
@@ -41,19 +43,19 @@ namespace EventStore.Projections.Core.Tests.Services.projections_manager
         protected override void Given()
         {
             base.Given();
-            NoStream("$projections-test-projection-state");
+            NoStream("$projections-test-projection-result");
             NoStream("$projections-test-projection-order");
             AllWritesToSucceed("$projections-test-projection-order");
             NoStream("$projections-test-projection-checkpoint");
-            ExistingEvent("$projections-$all", "ProjectionCreated", null, "test-projection");
+            ExistingEvent("$projections-$all", "$ProjectionCreated", null, "test-projection");
             ExistingEvent(
-                "$projections-test-projection", "ProjectionUpdated", null,
+                "$projections-test-projection", "$ProjectionUpdated", null,
                 @"{
                     ""Query"":""fromAll(); on_any(function(){});log('hello-from-projection-definition');"", 
                     ""Mode"":""3"", 
                     ""Enabled"":false, 
                     ""HandlerType"":""JS"",
-                    ""SourceDefintion"":{
+                    ""SourceDefinition"":{
                         ""AllEvents"":true,
                         ""AllStreams"":true,
                     }
@@ -63,16 +65,18 @@ namespace EventStore.Projections.Core.Tests.Services.projections_manager
 
         private string _projectionName;
 
-        protected override void When()
+        protected override IEnumerable<WhenStep> When()
         {
             _projectionName = "test-projection";
-            _manager.Handle(new SystemMessage.BecomeWorking());
+            yield return new SystemMessage.BecomeMaster(Guid.NewGuid());
         }
 
         [Test]
         public void the_projection_source_can_be_retrieved()
         {
-            _manager.Handle(new ProjectionManagementMessage.GetQuery(new PublishEnvelope(_bus), _projectionName));
+            _manager.Handle(
+                new ProjectionManagementMessage.GetQuery(
+                    new PublishEnvelope(_bus), _projectionName, ProjectionManagementMessage.RunAs.Anonymous));
             Assert.AreEqual(1, _consumer.HandledMessages.OfType<ProjectionManagementMessage.ProjectionQuery>().Count());
             var projectionQuery =
                 _consumer.HandledMessages.OfType<ProjectionManagementMessage.ProjectionQuery>().Single();
@@ -103,6 +107,7 @@ namespace EventStore.Projections.Core.Tests.Services.projections_manager
         public void the_projection_state_can_be_retrieved()
         {
             _manager.Handle(new ProjectionManagementMessage.GetState(new PublishEnvelope(_bus), _projectionName, ""));
+            _queue.Process();
 
             Assert.AreEqual(1, _consumer.HandledMessages.OfType<ProjectionManagementMessage.ProjectionState>().Count());
             Assert.AreEqual(

@@ -26,12 +26,13 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 // 
 
+using System;
 using System.Collections.Generic;
 using EventStore.Core.Messages;
 using EventStore.Core.Messaging;
 using EventStore.Core.Services.RequestManager.Managers;
 using EventStore.Core.Tests.Fakes;
-using EventStore.Core.Tests.Helper;
+using EventStore.Core.Tests.Helpers;
 using NUnit.Framework;
 
 namespace EventStore.Core.Tests.Services.Replication.TransactionCommit
@@ -40,32 +41,31 @@ namespace EventStore.Core.Tests.Services.Replication.TransactionCommit
     {
         protected override TwoPhaseRequestManagerBase OnManager(FakePublisher publisher)
         {
-            return new TransactionCommitTwoPhaseRequestManager(publisher, 3, 3);
+            return new TransactionCommitTwoPhaseRequestManager(publisher, 3, 3, PrepareTimeout, CommitTimeout);
         }
 
         protected override IEnumerable<Message> WithInitialMessages()
         {
-            yield return new StorageMessage.TransactionCommitRequestCreated(CorrelationId, Envelope, 4);
+            yield return new ClientMessage.TransactionCommit(InternalCorrId, ClientCorrId, Envelope, true, 4, null);
         }
 
         protected override Message When()
         {
-            return new StorageMessage.PreparePhaseTimeout(CorrelationId);
+            return new StorageMessage.RequestManagerTimerTick(DateTime.UtcNow + PrepareTimeout + TimeSpan.FromMinutes(5));
         }
 
         [Test]
         public void failed_request_message_is_published()
         {
-            Assert.That(produced.ContainsSingle<StorageMessage.RequestCompleted>(x => x.CorrelationId == CorrelationId && x.Success == false));
+            Assert.That(Produced.ContainsSingle<StorageMessage.RequestCompleted>(
+                x => x.CorrelationId == InternalCorrId && x.Success == false));
         }
 
         [Test]
         public void the_envelope_is_replied_to_with_failure()
         {
-            Assert.AreEqual(1, Envelope.Replies.Count);
-            var reply = (ClientMessage.TransactionCommitCompleted)Envelope.Replies[0];
-            Assert.AreEqual(CorrelationId, reply.CorrelationId);
-            Assert.AreEqual(OperationResult.PrepareTimeout, reply.Result);
+            Assert.That(Envelope.Replies.ContainsSingle<ClientMessage.TransactionCommitCompleted>(
+                x => x.CorrelationId == ClientCorrId && x.Result == OperationResult.PrepareTimeout));
         }
     }
 }

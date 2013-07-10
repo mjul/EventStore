@@ -29,8 +29,12 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Runtime.Serialization;
+using EventStore.Common.Utils;
+using EventStore.Core.Util;
 using EventStore.Projections.Core.Services.Processing;
 using EventStore.Projections.Core.v8;
+using Newtonsoft.Json.Linq;
+using System.Linq;
 
 namespace EventStore.Projections.Core.Services.v8
 {
@@ -44,10 +48,10 @@ namespace EventStore.Projections.Core.Services.v8
 
         public V8ProjectionStateHandler(
             string preludeName, string querySource, Func<string, Tuple<string, string>> getModuleSource,
-            Action<string> logger)
+            Action<string> logger, Action<int, Action> cancelCallbackFactory)
         {
             var preludeSource = getModuleSource(preludeName);
-            var prelude = new PreludeScript(preludeSource.Item1, preludeSource.Item2, getModuleSource, logger);
+            var prelude = new PreludeScript(preludeSource.Item1, preludeSource.Item2, getModuleSource, cancelCallbackFactory, logger);
             QueryScript query;
             try
             {
@@ -74,6 +78,14 @@ namespace EventStore.Projections.Core.Services.v8
 
             [DataMember] public string body;
 
+            [DataMember] public Dictionary<string, JRaw> metadata;
+
+            public ExtraMetaData GetExtraMetadata()
+            {
+                if (metadata == null)
+                    return null;
+                return new ExtraMetaData(metadata);
+            }
         }
 
 
@@ -90,48 +102,19 @@ namespace EventStore.Projections.Core.Services.v8
             }
             if (_emittedEvents == null)
                 _emittedEvents = new List<EmittedEvent>();
-            _emittedEvents.Add(new EmittedEvent(emittedEvent.streamId, Guid.NewGuid(), emittedEvent.eventName, emittedEvent.body, _eventPosition, expectedTag: null));
+            _emittedEvents.Add(
+                new EmittedDataEvent(
+                    emittedEvent.streamId, Guid.NewGuid(), emittedEvent.eventName, emittedEvent.body,
+                    emittedEvent.GetExtraMetadata(), _eventPosition, expectedTag: null));
         }
 
         public void ConfigureSourceProcessingStrategy(QuerySourceProcessingStrategyBuilder builder)
         {
             CheckDisposed();
-            var sourcesDefintion = _query.GetSourcesDefintion();
-            if (sourcesDefintion == null)
+            var sourcesDefinition = _query.GetSourcesDefintion();
+            if (sourcesDefinition == null)
                 throw new InvalidOperationException("Invalid query.  No source definition.");
-            if (sourcesDefintion.AllStreams)
-                builder.FromAll();
-            else
-            {
-                if (sourcesDefintion.Streams != null)
-                    foreach (var stream in sourcesDefintion.Streams)
-                        builder.FromStream(stream);
-                if (sourcesDefintion.Categories != null)
-                    foreach (var category in sourcesDefintion.Categories)
-                        builder.FromCategory(category);
-            }
-            if (sourcesDefintion.AllEvents)
-                builder.AllEvents();
-            else
-                if (sourcesDefintion.Events != null)
-                    foreach (var @event in sourcesDefintion.Events)
-                        builder.IncludeEvent(@event);
-            if (sourcesDefintion.ByStreams)
-                builder.SetByStream();
-            if (sourcesDefintion.ByCustomPartitions)
-                builder.SetByCustomPartitions();
-            if (!string.IsNullOrWhiteSpace(sourcesDefintion.Options.StateStreamName))
-                builder.SetStateStreamNameOption(sourcesDefintion.Options.StateStreamName);
-            if (!string.IsNullOrWhiteSpace(sourcesDefintion.Options.ForceProjectionName))
-                builder.SetForceProjectionName(sourcesDefintion.Options.ForceProjectionName);
-            if (sourcesDefintion.Options.UseEventIndexes)
-                builder.SetUseEventIndexes(true);
-            if (sourcesDefintion.Options.ReorderEvents)
-                builder.SetReorderEvents(true);
-            if (sourcesDefintion.Options.ProcessingLag != null)
-                builder.SetProcessingLag(sourcesDefintion.Options.ProcessingLag.GetValueOrDefault());
-            if (sourcesDefintion.Options.EmitStateUpdated)
-                builder.SetEmitStateUpdated(true);
+            sourcesDefinition.ConfigureSourceProcessingStrategy(builder);
         }
 
         public void Load(string state)
@@ -157,7 +140,7 @@ namespace EventStore.Projections.Core.Services.v8
                 throw new ArgumentNullException("streamId");
             var partition = _query.GetPartition(
                 data.Trim(), // trimming data passed to a JS 
-                new string[] { streamId, eventType, category ?? "", sequenceNumber.ToString(CultureInfo.InvariantCulture), metadata ?? "", eventPosition.ToJson() });
+                new string[] { streamId, eventType, category ?? "", sequenceNumber.ToString(CultureInfo.InvariantCulture), metadata ?? "" });
             if (partition == "")
                 return null;
             else 
@@ -165,26 +148,31 @@ namespace EventStore.Projections.Core.Services.v8
         }
 
         public bool ProcessEvent(
-            string partition, CheckpointTag eventPosition, string streamId, string eventType, string category, Guid eventid,
-            int sequenceNumber, string metadata, string data, out string newState, out EmittedEvent[] emittedEvents)
+            string partition, CheckpointTag eventPosition, string category, ResolvedEvent data, out string newState,
+            out EmittedEvent[] emittedEvents)
         {
             CheckDisposed();
-            if (eventType == null)
-                throw new ArgumentNullException("eventType");
-            if (streamId == null)
-                throw new ArgumentNullException("streamId");
+            if (data == null)
+                throw new ArgumentNullException("data");
             _eventPosition = eventPosition;
             _emittedEvents = null;
-            _query.Push(
-                data.Trim(), // trimming data passed to a JS 
+            newState = _query.Push(
+                data.Data.Trim(), // trimming data passed to a JS 
                 new[]
                     {
-                        streamId, eventType, category ?? "", sequenceNumber.ToString(CultureInfo.InvariantCulture),
-                        metadata ?? "", partition, eventPosition.ToJson()
+                        data.IsJson ? "1" : "",
+                        data.EventStreamId, data.EventType, category ?? "", data.EventSequenceNumber.ToString(CultureInfo.InvariantCulture),
+                        data.Metadata, partition
                     });
-            newState = _query.GetState();
             emittedEvents = _emittedEvents == null ? null : _emittedEvents.ToArray();
             return true;
+        }
+
+        public string TransformStateToResult()
+        {
+            CheckDisposed();
+            var result = _query.TransformStateToResult();
+            return result;
         }
 
         private void CheckDisposed()

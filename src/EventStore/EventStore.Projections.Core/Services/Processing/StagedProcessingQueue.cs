@@ -45,15 +45,20 @@ namespace EventStore.Projections.Core.Services.Processing
         private class TaskEntry
         {
             public readonly StagedTask Task;
+            public readonly long Sequence;
             public bool Busy;
             public object BusyCorrelationId;
+            public TaskEntry PreviousByCorrelation;
+            public TaskEntry NextByCorrelation;
+            public TaskEntry Next;
             public bool Completed;
             public int ReadForStage;
 
-            public TaskEntry(StagedTask task)
+            public TaskEntry(StagedTask task, long sequence)
             {
                 Task = task;
-                BusyCorrelationId = task.InitialCorrelationId;
+                ReadForStage = -1;
+                Sequence = sequence;
             }
 
             public override string ToString()
@@ -62,85 +67,158 @@ namespace EventStore.Projections.Core.Services.Processing
             }
         }
 
+        private class StageEntry
+        {
+            public TaskEntry Entry;
+            public StageEntry Next;
+        }
+
         private readonly bool[] _orderedStage;
-        private readonly Queue<TaskEntry> _tasks = new Queue<TaskEntry>();
-        private readonly HashSet<object> _precedingCorrelations = new HashSet<object>();
+        private readonly Dictionary<object, TaskEntry> _correlationLastEntries = new Dictionary<object, TaskEntry>();
+        private StageEntry[] _byUnorderedStageFirst; // null means all processed? so append need to set it?
+        private StageEntry[] _byUnorderedStageLast; // null means all processed? so append need to set it?
+        private TaskEntry[] _byOrderedStageLast; // null means all processed? so append need to set it?
+        private long _sequence = 0;
+        private TaskEntry _first;
+        private TaskEntry _last;
+        private int _count;
+        private int _maxStage;
 
         public StagedProcessingQueue(bool[] orderedStage)
         {
             _orderedStage = orderedStage.ToArray();
+            _byUnorderedStageFirst = new StageEntry[_orderedStage.Length];
+            _byUnorderedStageLast = new StageEntry[_orderedStage.Length];
+            _byOrderedStageLast = new TaskEntry[_orderedStage.Length];
+            _maxStage = _orderedStage.Length - 1;
         }
 
         public bool IsEmpty
         {
-            get { return _tasks.Count == 0; }
+            get { return _count == 0; }
         }
 
         public int Count
         {
-            get { return _tasks.Count; }
+            get { return _count; }
         }
 
         public void Enqueue(StagedTask stagedTask)
         {
-            _tasks.Enqueue(new TaskEntry(stagedTask));
+            var entry = new TaskEntry(stagedTask, ++_sequence);
+            if (_first == null)
+            {
+                _first = entry;
+                _last = entry;
+                _count = 1;
+            }
+            else
+            {
+                _last.Next = entry;
+                _last = entry;
+                _count++;
+            }
+            // re-initialize already completed queues
+            for (var stage = 0; stage <= _maxStage; stage++)
+                if (_orderedStage[stage] && _byOrderedStageLast[stage] == null)
+                    _byOrderedStageLast[stage] = entry;
+
+            SetEntryCorrelation(entry, stagedTask.InitialCorrelationId);
+            EnqueueForStage(entry, 0);
         }
 
-        public int Process()
+        public bool Process(int max = 1)
         {
             int processed = 0;
-            StagedTask taskProcessed = null;
-            while (_tasks.Count > 0)
+            int fromStage = _maxStage;
+            while (_count > 0 && processed < max)
             {
-                taskProcessed = ProcessOneTask(taskProcessed);
-                if (taskProcessed == null)
+                RemoveCompleted();
+                var entry = GetEntryToProcess(fromStage);
+                if (entry == null)
                     break;
+                ProcessEntry(entry);
+                fromStage = entry.ReadForStage;
                 processed++;
             }
-            return processed;
+            return processed > 0;
         }
 
-        private StagedTask ProcessOneTask(StagedTask runThisOnly)
+        private void ProcessEntry(TaskEntry entry)
         {
-            while (_tasks.Count > 0 && _tasks.Peek().Completed)
-                _tasks.Dequeue();
+            // here we should be at the first StagedTask of current processing level which is not busy
+            entry.Busy = true;
+            AdvanceStage(entry.ReadForStage, entry);
+            entry.Task.Process(
+                entry.ReadForStage,
+                (readyForStage, newCorrelationId) => CompleteTaskProcessing(entry, readyForStage, newCorrelationId));
+        }
 
-            _precedingCorrelations.Clear();
-            var previousTaskMinimumProcessingStage  = int.MaxValue;
-            var taskStage = int.MaxValue;
-            foreach (var entry in _tasks)
+        private TaskEntry GetEntryToProcess(int fromStage)
+        {
+
+            var stageIndex  = fromStage;
+            while (stageIndex >= 0)
             {
-                previousTaskMinimumProcessingStage = Math.Min(taskStage, previousTaskMinimumProcessingStage);
-                taskStage = entry.ReadForStage;
-
-                var busyCorrelationId = entry.BusyCorrelationId;
-                if (busyCorrelationId != null)
+                TaskEntry task = null;
+                if (!_orderedStage[stageIndex])
                 {
-                    if (_precedingCorrelations.Contains(busyCorrelationId))
-                        break;
-                    _precedingCorrelations.Add(busyCorrelationId);
+                    if (_byUnorderedStageFirst[stageIndex] != null
+                        && _byUnorderedStageFirst[stageIndex].Entry.PreviousByCorrelation == null)
+                    {
+                        var stageEntry = _byUnorderedStageFirst[stageIndex];
+                        task = stageEntry.Entry;
+                    }
+                }
+                else
+                {
+                    var taskEntry = _byOrderedStageLast[stageIndex];
+                    if (taskEntry != null && taskEntry.ReadForStage == stageIndex && !taskEntry.Busy
+                        && !taskEntry.Completed && taskEntry.PreviousByCorrelation == null)
+                        task = taskEntry;
+                }
+                if (task == null)
+                {
+                    stageIndex--;
+                    continue;
                 }
 
-                if (entry.Busy)
-                    continue;
+                if (task.ReadForStage != stageIndex)
+                    throw new Exception();
+                return task;
 
-                if (entry.Completed)
-                    continue;
-
-                if (_orderedStage[taskStage] && taskStage > previousTaskMinimumProcessingStage)
-                    continue;
-
-                if (runThisOnly != null && entry.Task != runThisOnly) // skip other tasks (this is to allow current entry continue to the next step - required by TickHandling)
-                    break; // do not skip, we can process only in this order
-
-                // here we should be at the first StagedTask of current processing level which is not busy
-                entry.Busy = true;
-                entry.Task.Process(
-                    taskStage,
-                    (readyForStage, newCorrelationId) => CompleteTaskProcessing(entry, readyForStage, newCorrelationId));
-                return entry.Task;
             }
             return null;
+        }
+
+        private void RemoveCompleted()
+        {
+            while (_first != null && _first.Completed)
+            {
+                var task = _first;
+                _first = task.Next;
+                if (_first == null)
+                    _last = null;
+                _count--;
+                if (task.BusyCorrelationId != null)
+                {
+                    var nextByCorrelation = task.NextByCorrelation;
+                    if (nextByCorrelation != null)
+                    {
+                        if (nextByCorrelation.PreviousByCorrelation != task)
+                            throw new Exception("Invalid linked list by correlation");
+                        task.NextByCorrelation = null;
+                        nextByCorrelation.PreviousByCorrelation = null;
+                        if (!_orderedStage[nextByCorrelation.ReadForStage])
+                            EnqueueForStage(nextByCorrelation, nextByCorrelation.ReadForStage);
+                    }
+                    else
+                    {
+                        // remove the last one
+                        _correlationLastEntries.Remove(task.BusyCorrelationId); 
+                    }
+                }
+            }
         }
 
         private void CompleteTaskProcessing(TaskEntry entry, int readyForStage, object newCorrelationId)
@@ -148,24 +226,97 @@ namespace EventStore.Projections.Core.Services.Processing
             if (!entry.Busy)
                 throw new InvalidOperationException("Task was not in progress");
             entry.Busy = false;
-            if (!_orderedStage[entry.ReadForStage] && !Equals(entry.BusyCorrelationId, newCorrelationId))
-                throw new InvalidOperationException("Cannot change busy correlation id at non-ordered stage");
-            entry.BusyCorrelationId = newCorrelationId;
+            SetEntryCorrelation(entry, newCorrelationId);
             if (readyForStage < 0)
-                RemoveCompletedTask(entry);
+            {
+                MarkCompletedTask(entry);
+                if (entry == _first)
+                    RemoveCompleted();
+            }
             else
-                entry.ReadForStage = readyForStage;
+                EnqueueForStage(entry, readyForStage);
         }
 
-        private void RemoveCompletedTask(TaskEntry entry)
+        private void EnqueueForStage(TaskEntry entry, int readyForStage)
+        {
+            entry.ReadForStage = readyForStage;
+            if (!_orderedStage[readyForStage] && (entry.PreviousByCorrelation == null))
+            {
+                var stageEntry = new StageEntry {Entry = entry, Next = null};
+                if (_byUnorderedStageFirst[readyForStage] != null)
+                {
+                    _byUnorderedStageLast[readyForStage].Next = stageEntry;
+                    _byUnorderedStageLast[readyForStage] = stageEntry;
+                }
+                else
+                {
+                    _byUnorderedStageFirst[readyForStage] = stageEntry;
+                    _byUnorderedStageLast[readyForStage] = stageEntry;
+                }
+            }
+        }
+
+        private void AdvanceStage(int stage, TaskEntry entry)
+        {
+            if (!_orderedStage[stage])
+            {
+                if (_byUnorderedStageFirst[stage].Entry != entry)
+                    throw new ArgumentException(
+                        string.Format("entry is not a head of the queue at the stage {0}", stage), "entry");
+                _byUnorderedStageFirst[stage] = _byUnorderedStageFirst[stage].Next;
+                if (_byUnorderedStageFirst[stage] == null)
+                    _byUnorderedStageLast[stage] = null;
+            }
+            else
+            {
+                if (_byOrderedStageLast[stage] != entry)
+                    throw new ArgumentException(
+                        string.Format("entry is not a head of the queue at the stage {0}", stage), "entry");
+                _byOrderedStageLast[stage] = entry.Next;
+            }
+        }
+
+        private void SetEntryCorrelation(TaskEntry entry, object newCorrelationId)
+        {
+            if (!Equals(entry.BusyCorrelationId, newCorrelationId))
+            {
+                if (entry.ReadForStage != -1 && !_orderedStage[entry.ReadForStage])
+                    throw new InvalidOperationException("Cannot set busy correlation id at non-ordered stage");
+                if (entry.BusyCorrelationId != null)
+                    throw new InvalidOperationException("Busy correlation id has been already set");
+
+                entry.BusyCorrelationId = newCorrelationId;
+                if (newCorrelationId != null)
+                {
+                    TaskEntry lastEntry;
+                    if (_correlationLastEntries.TryGetValue(newCorrelationId, out lastEntry))
+                    {
+                        if (entry.Sequence < lastEntry.Sequence)
+                            //NOTE: should never happen as we require ordered stage or initialization
+                            throw new InvalidOperationException("Cannot inject task correlation id before another task with the same correlation id");
+                        lastEntry.NextByCorrelation = entry;
+                        entry.PreviousByCorrelation = lastEntry;
+                        _correlationLastEntries[newCorrelationId] = entry;
+                    }
+                    else
+                        _correlationLastEntries.Add(newCorrelationId, entry);
+                }
+            }
+        }
+
+        private void MarkCompletedTask(TaskEntry entry)
         {
             entry.Completed = true;
         }
 
         public void Initialize()
         {
-            _precedingCorrelations.Clear();
-            _tasks.Clear();
+            _byUnorderedStageFirst = new StageEntry[_orderedStage.Length];
+            _byUnorderedStageLast = new StageEntry[_orderedStage.Length];
+            _byOrderedStageLast = new TaskEntry[_orderedStage.Length];
+            _count = 0;
+            _first = null;
+            _last = null;
         }
     }
 

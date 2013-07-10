@@ -69,7 +69,7 @@ namespace EventStore.Core.Services.Monitoring.Stats
             }
             catch (Exception ex)
             {
-                log.DebugException(ex, "Error while reading drive info for path {0}", path);
+                log.Debug("Error while reading drive info for path {0}. Message: {1}.", path, ex.Message);
                 return null;
             }
         }
@@ -99,7 +99,7 @@ namespace EventStore.Core.Services.Monitoring.Stats
 
             try
             {
-                var driveInfo = ShellExecutor.GetOutput("df", directory);
+                var driveInfo = ShellExecutor.GetOutput("df", string.Format("-P {0}", directory));
                 var driveInfoLines = driveInfo.Split(new[] { Environment.NewLine }, StringSplitOptions.RemoveEmptyEntries);
                 var ourline = driveInfoLines[1];
                 var spaces = new Regex(@"[\s\t]+", RegexOptions.Compiled);

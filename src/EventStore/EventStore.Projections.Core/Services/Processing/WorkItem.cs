@@ -44,7 +44,7 @@ namespace EventStore.Projections.Core.Services.Processing
             : base(initialCorrelationId)
         {
             Projection = projection;
-            _lastStage = 4;
+            _lastStage = 5;
         }
 
         public override void Process(int onStage, Action<int, object> readyForStage)
@@ -53,7 +53,6 @@ namespace EventStore.Projections.Core.Services.Processing
                 throw new InvalidOperationException("CheckpointTag has not been initialized");
             _complete = readyForStage;
             _onStage = onStage;
-            Projection.EnsureTickPending();
             switch (onStage)
             {
                 case 0:
@@ -71,14 +70,13 @@ namespace EventStore.Projections.Core.Services.Processing
                 case 4:
                     WriteOutput();
                     break;
+                case 5:
+                    CompleteItem();
+                    break;
                 default:
                     throw new NotSupportedException();
             }
-        }
-
-        protected virtual void WriteOutput()
-        {
-            NextStage();
+            Projection.EnsureTickPending();
         }
 
         protected virtual void RecordEventOrder()
@@ -101,15 +99,21 @@ namespace EventStore.Projections.Core.Services.Processing
             NextStage();
         }
 
+        protected virtual void WriteOutput()
+        {
+            NextStage();
+        }
+
+
+        protected virtual void CompleteItem()
+        {
+            NextStage();
+        }
+
         protected void NextStage(object newCorrelationId = null)
         {
             _lastStageCorrelationId = newCorrelationId ?? _lastStageCorrelationId ?? InitialCorrelationId;
             _complete(_onStage == _lastStage ? -1 : _onStage + 1, _lastStageCorrelationId);
-        }
-
-        protected void Complete()
-        {
-            _complete(-1, InitialCorrelationId);
         }
 
         public void SetCheckpointTag(CheckpointTag checkpointTag)

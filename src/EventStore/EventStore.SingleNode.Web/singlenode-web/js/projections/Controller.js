@@ -54,7 +54,8 @@ define(function () {
                 success: function (data, textStatus, jqXHR) {
                     created = true;
                     baseUrl = jqXHR.getResponseHeader('Location');
-                    observer.configureUrl(baseUrl);
+                    if (observer) 
+                        observer.configureUrl(baseUrl);
                     successPostCommand(success)(data, textStatus, jqXHR);
                 },
                 error: errorPostCommand,
@@ -83,6 +84,10 @@ define(function () {
             stop: function (success) {
                 if (created)
                     postCommand("disable", success);
+            },
+            reset: function(success) {
+                if (created)
+                    postCommand("reset", success);
             },
             update: function (query, emit, success) {
                 if (created)

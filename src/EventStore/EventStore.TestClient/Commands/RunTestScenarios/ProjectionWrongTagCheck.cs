@@ -38,8 +38,8 @@ namespace EventStore.TestClient.Commands.RunTestScenarios
     {
         private TimeSpan _executionPeriod;
 
-        public ProjectionWrongTagCheck(Action<IPEndPoint, byte[]> directSendOverTcp, int maxConcurrentRequests, int connections, int streams, int eventsPerStream, int streamDeleteStep, TimeSpan executionPeriod, string dbParentPath)
-            : base(directSendOverTcp, maxConcurrentRequests, connections, streams, eventsPerStream, streamDeleteStep, dbParentPath)
+        public ProjectionWrongTagCheck(Action<IPEndPoint, byte[]> directSendOverTcp, int maxConcurrentRequests, int connections, int streams, int eventsPerStream, int streamDeleteStep, TimeSpan executionPeriod, string dbParentPath, NodeConnectionInfo customNode)
+            : base(directSendOverTcp, maxConcurrentRequests, connections, streams, eventsPerStream, streamDeleteStep, dbParentPath, customNode)
         {
             _executionPeriod = executionPeriod;
         }
@@ -90,7 +90,7 @@ namespace EventStore.TestClient.Commands.RunTestScenarios
 
             var writeTask = WriteData();
 
-            var expectedEventsPerStream = EventsPerStream.ToString();
+            var lastExpectedEventVersion = (EventsPerStream - 1).ToString();
 
             var successTask = Task.Factory.StartNew<bool>(() =>
             {
@@ -136,11 +136,14 @@ namespace EventStore.TestClient.Commands.RunTestScenarios
                     if (!success)
                         break;
 
-                    if (CheckProjectionState(sumCheckForBankAccount0, "success", x => x == expectedEventsPerStream))
+                    if (CheckProjectionState(sumCheckForBankAccount0, "success", x => x == lastExpectedEventVersion))
                         break;
                 }
 
                 KillNode(nodeProcessId);
+
+                if (!success)
+                    throw new ApplicationException(string.Format("Projection {0} has not completed with expected result {1} in time.", sumCheckForBankAccount0, lastExpectedEventVersion));
 
                 return success;
 

@@ -31,7 +31,6 @@ using System.Linq;
 using System.Text;
 using EventStore.Core.Data;
 using EventStore.Projections.Core.Messages;
-using EventStore.Projections.Core.Services.Processing;
 using NUnit.Framework;
 using ResolvedEvent = EventStore.Projections.Core.Services.Processing.ResolvedEvent;
 
@@ -43,7 +42,7 @@ namespace EventStore.Projections.Core.Tests.Services.core_projection
         protected override void Given()
         {
             _checkpointHandledThreshold = 2;
-            NoStream("$projections-projection-state");
+            NoStream("$projections-projection-result");
             NoStream("$projections-projection-order");
             AllWritesToSucceed("$projections-projection-order");
             NoStream("$projections-projection-checkpoint");
@@ -55,23 +54,23 @@ namespace EventStore.Projections.Core.Tests.Services.core_projection
         {
             //projection subscribes here
             _coreProjection.Handle(
-                ProjectionSubscriptionMessage.CommittedEventReceived.Sample(
-                    Guid.Empty, _subscriptionId, new EventPosition(120, 110), "/event_category/1", -1, false,
-                    ResolvedEvent.Sample(
-                        Guid.NewGuid(), "handle_this_type", false, Encoding.UTF8.GetBytes("data1"),
-                        Encoding.UTF8.GetBytes("metadata")), 0));
+                EventReaderSubscriptionMessage.CommittedEventReceived.Sample(
+                    new ResolvedEvent(
+                        "/event_category/1", -1, "/event_category/1", -1, false, new TFPos(120, 110),
+                        Guid.NewGuid(), "handle_this_type", false, "data1",
+                        "metadata"), _subscriptionId, 0));
             _coreProjection.Handle(
-                ProjectionSubscriptionMessage.CommittedEventReceived.Sample(
-                    Guid.Empty, _subscriptionId, new EventPosition(140, 130), "/event_category/1", -1, false,
-                    ResolvedEvent.Sample(
-                        Guid.NewGuid(), "handle_this_type", false, Encoding.UTF8.GetBytes("data2"),
-                        Encoding.UTF8.GetBytes("metadata")), 1));
+                EventReaderSubscriptionMessage.CommittedEventReceived.Sample(
+                    new ResolvedEvent(
+                        "/event_category/1", -1, "/event_category/1", -1, false, new TFPos(140, 130),
+                        Guid.NewGuid(), "handle_this_type", false, "data2",
+                        "metadata"), _subscriptionId, 1));
             _coreProjection.Handle(
-                ProjectionSubscriptionMessage.CommittedEventReceived.Sample(
-                    Guid.Empty, _subscriptionId, new EventPosition(160, 150), "/event_category/1", -1, false,
-                    ResolvedEvent.Sample(
-                        Guid.NewGuid(), "handle_this_type", false, Encoding.UTF8.GetBytes("data3"),
-                        Encoding.UTF8.GetBytes("metadata")), 2));
+                EventReaderSubscriptionMessage.CommittedEventReceived.Sample(
+                    new ResolvedEvent(
+                        "/event_category/1", -1, "/event_category/1", -1, false, new TFPos(160, 150),
+                        Guid.NewGuid(), "handle_this_type", false, "data3",
+                        "metadata"), _subscriptionId, 2));
             _coreProjection.Stop();
         }
 
@@ -81,15 +80,16 @@ namespace EventStore.Projections.Core.Tests.Services.core_projection
             AllWriteComplete();
             Assert.AreEqual(
                 1,
-                _writeEventHandler.HandledMessages.Count(v => v.Events.Any(e => e.EventType == "ProjectionCheckpoint")));
+                _writeEventHandler.HandledMessages.Count(v => v.Events.Any(e => e.EventType == "$ProjectionCheckpoint")));
         }
 
         [Test]
         public void other_events_are_not_written_after_the_checkpoint_write()
         {
             AllWriteComplete();
-            var index = _writeEventHandler.HandledMessages.FindIndex(
-                    v => v.Events.Any(e => e.EventType == "ProjectionCheckpoint"));
+            var index =
+                _writeEventHandler.HandledMessages.FindIndex(
+                    v => v.Events.Any(e => e.EventType == "$ProjectionCheckpoint"));
             Assert.AreEqual(index + 1, _writeEventHandler.HandledMessages.Count());
         }
     }

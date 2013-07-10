@@ -34,9 +34,9 @@ using EventStore.Common.Utils;
 using EventStore.Core.Data;
 using EventStore.Core.Messages;
 using EventStore.Core.Services.Transport.Http;
-using EventStore.Core.Services.Transport.Http.Codecs;
 using EventStore.Transport.Http;
 using EventStore.Transport.Http.Client;
+using EventStore.Transport.Http.Codecs;
 using HttpStatusCode = EventStore.Transport.Http.HttpStatusCode;
 
 namespace EventStore.TestClient.Commands
@@ -185,15 +185,10 @@ namespace EventStore.TestClient.Commands
                         var url = context.Client.HttpEndpoint.ToHttpUrl("/streams/{0}", esId);
 
                         var dataResultingSize = dataSizeCoefficient * dataSize;
-                        var write = new HttpClientMessageDto.WriteEventsText(
-                            ExpectedVersion.Any,
-                            new[] { 
-                                new HttpClientMessageDto.ClientEventText(
-                            Guid.NewGuid(),
-                            "type",
-                            "DATA" + dataResultingSize.ToString(" 00000 ") + new string('*', dataResultingSize),
-                                    "METADATA" + new string('$', 100))
-                            });
+                        var write = new[] { new HttpClientMessageDto.ClientEventText(Guid.NewGuid(),
+                                                                                     "type",
+                                                                                     "DATA" + dataResultingSize.ToString(" 00000 ") + new string('*', dataResultingSize),
+                                                                                     "METADATA" + new string('$', 100))};
                         var request = Codec.Xml.To(write);
                         client.Post(url, 
                                     request, 

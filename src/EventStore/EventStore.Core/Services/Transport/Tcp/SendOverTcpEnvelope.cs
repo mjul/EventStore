@@ -26,6 +26,8 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 // 
 using System;
+using System.Diagnostics;
+using EventStore.Common.Log;
 using EventStore.Common.Utils;
 using EventStore.Core.Bus;
 using EventStore.Core.Messages;
@@ -35,6 +37,8 @@ namespace EventStore.Core.Services.Transport.Tcp
 {
     public class SendOverTcpEnvelope : IEnvelope
     {
+        private static readonly ILogger Log = LogManager.GetLoggerFor<SendOverTcpEnvelope>();
+
         private readonly IPublisher _networkSendQueue;
         private readonly WeakReference _manager;
 
@@ -50,9 +54,7 @@ namespace EventStore.Core.Services.Transport.Tcp
         {
             var man = _manager.Target as TcpConnectionManager;
             if (man != null)
-            {
                 _networkSendQueue.Publish(new TcpMessage.TcpSend(man, message));
-            }
         }
     }
 }

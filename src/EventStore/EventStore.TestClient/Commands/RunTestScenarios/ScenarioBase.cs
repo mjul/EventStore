@@ -32,64 +32,50 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Net;
-using System.Net.Sockets;
 using System.Reflection;
-using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using EventStore.ClientAPI;
+using EventStore.ClientAPI.SystemData;
 using EventStore.Common.Log;
-using EventStore.Common.Utils;
-using EventStore.Core.Services.Transport.Tcp;
+using EventStore.Core.Services;
+using EventStore.Core.Tests.Helpers;
+using ConsoleLogger = EventStore.ClientAPI.Common.Log.ConsoleLogger;
 using ILogger = EventStore.Common.Log.ILogger;
+using TcpCommand = EventStore.Core.Services.Transport.Tcp.TcpCommand;
+using TcpPackage = EventStore.Core.Services.Transport.Tcp.TcpPackage;
 
 namespace EventStore.TestClient.Commands.RunTestScenarios
 {
     internal abstract class ScenarioBase : IScenario
     {
         protected static readonly ILogger Log = LogManager.GetLoggerFor<ScenarioBase>();
-        protected static readonly ClientAPI.ILogger ApiLogger = new ClientApiLogger();
+        protected static readonly ClientAPI.ILogger ApiLogger = new ClientApiLoggerBridge(LogManager.GetLogger("client-api"));
 
-        private string _dbPath;
-
-        protected void CreateNewDbPath()
-        {
-            var dbParent = DbParentPath ?? Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
-            Debug.Assert(dbParent != null, "dbParent != null");
-
-            var dataFolder = Path.Combine(dbParent, "data");
-            var idx = 0;
-            _dbPath = Path.Combine(dataFolder, string.Format("es_{0}", idx));
-
-            while (Directory.Exists(_dbPath))
-            {
-                idx += 1;
-                _dbPath = Path.Combine(dataFolder, string.Format("es_{0}", idx));
-            }
-        }
-
-        protected readonly IPEndPoint _tcpEndPoint;
-
+        protected readonly UserCredentials AdminCredentials = new UserCredentials(SystemUsers.Admin, SystemUsers.DefaultAdminPassword);
         protected readonly Action<IPEndPoint, byte[]> DirectSendOverTcp;
         protected readonly int MaxConcurrentRequests;
         protected readonly int Connections;
         protected readonly int Streams;
         protected readonly int EventsPerStream;
         protected readonly int StreamDeleteStep;
-        protected readonly string DbParentPath;
 
+        private readonly NodeConnectionInfo _customNodeConnection;
+        private readonly NodeConnectionInfo _nodeConnection;
+        
         private readonly HashSet<int> _startedNodesProcIds;
+
+        private readonly string _dbPath;
+
+        private readonly Dictionary<WriteMode, Func<string, int, Func<int, EventData>, Task>> _writeHandlers;
+        private readonly IEventStoreConnection[] _connections;
+        private int _nextConnectionNum = -1;
+        private readonly ProjectionsManager _projectionsManager;
 
         protected virtual TimeSpan StartupWaitInterval
         {
             get { return TimeSpan.FromSeconds(12); }
         }
-
-        private readonly Dictionary<WriteMode, Func<string, int, Func<int, EventData>, Task>> _writeHandlers;
-
-        private readonly EventStoreConnection[] _connections;
-        private int _nextConnectionNum = -1;
-        private readonly ProjectionsManager _projectionsManager;
 
         protected ScenarioBase(Action<IPEndPoint, byte[]> directSendOverTcp,
                                int maxConcurrentRequests,
@@ -97,7 +83,8 @@ namespace EventStore.TestClient.Commands.RunTestScenarios
                                int streams,
                                int eventsPerStream,
                                int streamDeleteStep,
-                               string dbParentPath)
+                               string dbParentPath,
+                               NodeConnectionInfo customNodeConnection)
         {
             DirectSendOverTcp = directSendOverTcp;
             MaxConcurrentRequests = maxConcurrentRequests;
@@ -105,14 +92,29 @@ namespace EventStore.TestClient.Commands.RunTestScenarios
             Streams = streams;
             EventsPerStream = eventsPerStream;
             StreamDeleteStep = streamDeleteStep;
-            DbParentPath = dbParentPath;
+            _customNodeConnection = customNodeConnection;
 
             _startedNodesProcIds = new HashSet<int>();
-            CreateNewDbPath();
-            _tcpEndPoint = GetTcpEndPoint();
 
-            _connections = new EventStoreConnection[connections];
-            _projectionsManager = new ProjectionsManager(new IPEndPoint(_tcpEndPoint.Address, _tcpEndPoint.Port + 1000));
+            var ipAddress = IPAddress.Loopback;
+
+            if (_customNodeConnection != null)
+            {
+                _nodeConnection = _customNodeConnection;
+                _dbPath = null;
+            }
+            else
+            {
+                _dbPath = CreateNewDbPath(dbParentPath);
+                _nodeConnection = new NodeConnectionInfo(ipAddress,
+                                                         PortsHelper.GetAvailablePort(ipAddress),
+                                                         PortsHelper.GetAvailablePort(ipAddress));
+            }
+
+            _connections = new IEventStoreConnection[connections];
+
+            Log.Info("Projection manager points to {0}.", _nodeConnection);
+            _projectionsManager = new ProjectionsManager(new ConsoleLogger(), new IPEndPoint(_nodeConnection.IpAddress, _nodeConnection.HttpPort));
 
             _writeHandlers = new Dictionary<WriteMode, Func<string, int, Func<int, EventData>, Task>>
             {
@@ -122,7 +124,23 @@ namespace EventStore.TestClient.Commands.RunTestScenarios
             };
         }
 
-        protected EventStoreConnection GetConnection()
+        private static string CreateNewDbPath(string dbParentPath)
+        {
+            var dbParent = dbParentPath ?? Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
+
+            var dataFolder = Path.Combine(dbParent, "data");
+            var idx = 0;
+            var dbPath = Path.Combine(dataFolder, string.Format("es_{0}", idx));
+
+            while (Directory.Exists(dbPath))
+            {
+                idx += 1;
+                dbPath = Path.Combine(dataFolder, string.Format("es_{0}", idx));
+            }
+            return dbPath;
+        }
+
+        protected IEventStoreConnection GetConnection()
         {
             var connectionNum = (int)(((uint)Interlocked.Increment(ref _nextConnectionNum)) % Connections);
             return _connections[connectionNum];
@@ -135,13 +153,28 @@ namespace EventStore.TestClient.Commands.RunTestScenarios
 
         public void Run()
         {
+            const int maxReconnections = 200;
+            const int maxOperationRetries = 200;
+
             for (int i = 0; i < Connections; ++i)
             {
-                _connections[i] = EventStoreConnection.Create(ConnectionSettings.Create()
-                                                                                .UseLogger(ApiLogger)
-                                                                                .LimitConcurrentOperationsTo(MaxConcurrentRequests));
-                _connections[i].Connect(_tcpEndPoint);
-            }
+                _connections[i] = EventStoreConnection.Create(
+                      ConnectionSettings.Create()
+                                        .DisableVerboseLogging()
+                                        .UseCustomLogger(ApiLogger)
+                                        .LimitConcurrentOperationsTo(MaxConcurrentRequests)
+                                        .LimitRetriesForOperationTo(maxReconnections)
+                                        .LimitReconnectionsTo(maxOperationRetries)
+                                        .FailOnNoServerResponse()
+                                        .OnClosed((c, s) => Log.Debug("[SCENARIO] {0} closed.", c.ConnectionName))
+                                        .OnConnected((c, ep) => Log.Debug("[SCENARIO] {0} connected to [{1}].", c.ConnectionName, ep))
+                                        .OnDisconnected((c, ep) => Log.Debug("[SCENARIO] {0} disconnected from [{1}].", c.ConnectionName, ep))
+                                        .OnErrorOccurred((c, e) => Log.DebugException(e, "[SCENARIO] {0} error occurred.", c.ConnectionName))
+                                        .OnReconnecting(c => Log.Debug("[SCENARIO] {0} reconnecting.", c.ConnectionName)),
+                    new IPEndPoint(_nodeConnection.IpAddress, _nodeConnection.TcpPort),
+                    string.Format("ESConn-{0}", i));
+                _connections[i].Connect();
+            } 
             RunInternal();   
         }
 
@@ -151,12 +184,19 @@ namespace EventStore.TestClient.Commands.RunTestScenarios
         {
             CloseConnections();
             KillStartedNodes();
+            DeleteDatabase();
+        }
 
+        private void DeleteDatabase()
+        {
             try
             {
-                Log.Info("Deleting {0}...", _dbPath);
-                Directory.Delete(_dbPath, true);
-                Log.Info("Deleted {0}", _dbPath);
+                if (_dbPath != null)
+                {
+                    Log.Info("Deleting {0}...", _dbPath);
+                    Directory.Delete(_dbPath, true);
+                    Log.Info("Deleted {0}", _dbPath);
+                }
             }
             catch (IOException ex)
             {
@@ -221,8 +261,9 @@ namespace EventStore.TestClient.Commands.RunTestScenarios
             {
                 var s = stream;
                 Log.Info("Deleting stream {0}...", stream);
-                var task = store.DeleteStreamAsync(stream, EventsPerStream)
+                var task = store.DeleteStreamAsync(stream, (EventsPerStream - 1))
                                 .ContinueWith(x => Log.Info("Stream {0} successfully deleted", s));
+
                 tasks.Add(task);
             }
             Task.WaitAll(tasks.ToArray());
@@ -289,6 +330,15 @@ namespace EventStore.TestClient.Commands.RunTestScenarios
 
         protected int StartNode()
         {
+            int processId = -1;
+            if (_customNodeConnection == null)
+                processId = StartNewNode();
+
+            return processId;
+        }
+
+        private int StartNewNode()
+        {
             var clientFolder = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
 
             string fileName;
@@ -309,59 +359,33 @@ namespace EventStore.TestClient.Commands.RunTestScenarios
 
             var arguments = string.Format("{0} --run-projections --ip {1} -t {2} -h {3} --db {4}",
                                           argumentsHead,
-                                          _tcpEndPoint.Address,
-                                          _tcpEndPoint.Port,
-                                          _tcpEndPoint.Port + 1000,
+                                          _nodeConnection.IpAddress,
+                                          _nodeConnection.TcpPort,
+                                          _nodeConnection.HttpPort,
                                           _dbPath);
 
             Log.Info("Starting [{0} {1}]...", fileName, arguments);
 
             var startInfo = new ProcessStartInfo(fileName, arguments);
 
-            if (OS.IsLinux)
-            {
-                startInfo.UseShellExecute = false;
-                startInfo.RedirectStandardOutput = true;
-            }
-
             var nodeProcess = Process.Start(startInfo);
             if (nodeProcess == null || nodeProcess.HasExited)
-                throw new ApplicationException("Process was not started.");
+                throw new ApplicationException(string.Format("Process was not started [{0} {1}].", fileName, arguments));
 
             Thread.Sleep(3000);
             Process tmp;
             var running = TryGetProcessById(nodeProcess.Id, out tmp);
             if (!running || tmp.HasExited)
-                throw new ApplicationException("Process was not started.");
+                throw new ApplicationException(string.Format("Process was not started [{0} {1}].", fileName, arguments));
 
             _startedNodesProcIds.Add(nodeProcess.Id);
+
             Log.Info("Started node with process id {0}", nodeProcess.Id);
 
             Thread.Sleep(StartupWaitInterval);
             Log.Info("Started [{0} {1}]", fileName, arguments);
 
             return nodeProcess.Id;
-        }
-
-        private IPAddress GetInterIpAddress()
-        {
-            var interIp = IPAddress.None;
-
-            var host = Dns.GetHostEntry(Dns.GetHostName());
-            foreach (IPAddress ip in host.AddressList.Reverse())
-            {
-                if (ip.AddressFamily == AddressFamily.InterNetwork)
-                {
-                    interIp = ip;
-                    break;
-                }
-            }
-            return interIp;
-        }
-
-        private IPEndPoint GetTcpEndPoint()
-        {
-            return new IPEndPoint(GetInterIpAddress(), 31113);
         }
 
         private bool TryGetProcessById(int processId, out Process process)
@@ -385,16 +409,22 @@ namespace EventStore.TestClient.Commands.RunTestScenarios
 
         protected void KillNode(int processId)
         {
+            if (processId != -1)
+                KillStartedNode(processId);
+            else
+                Log.Info("Skip killing, procId -1");
+        }
+
+        private void KillStartedNode(int processId)
+        {
             Log.Info("Killing {0}...", processId);
 
             Process process;
             if (TryGetProcessById(processId, out process))
             {
-                _startedNodesProcIds.Remove(processId);
-
                 process.Kill();
 
-                var waitCount = 100;
+                var waitCount = 200;
                 while (!process.HasExited && waitCount > 0)
                 {
                     Thread.Sleep(250);
@@ -402,7 +432,15 @@ namespace EventStore.TestClient.Commands.RunTestScenarios
                 }
 
                 if (process.HasExited)
-                    Log.Info("Killed process {0}", processId);
+                {
+                    _startedNodesProcIds.Remove(processId);
+
+                    PortsHelper.ReturnPort(_nodeConnection.TcpPort);
+                    PortsHelper.ReturnPort(_nodeConnection.HttpPort);
+
+                    Log.Info("Killed process {0}, wait a bit.", processId);
+                    Thread.Sleep(1000); // wait for system to release port used by HttpListener.
+                }
                 else
                 {
                     Process temp;
@@ -421,6 +459,7 @@ namespace EventStore.TestClient.Commands.RunTestScenarios
         public void Dispose()
         {
             CloseConnections();
+            Thread.Sleep(2 * 1000);
             KillStartedNodes();
         }
 
@@ -449,7 +488,7 @@ namespace EventStore.TestClient.Commands.RunTestScenarios
         {
             Log.Info("Send scavenge command...");
             var package = new TcpPackage(TcpCommand.ScavengeDatabase, Guid.NewGuid(), null).AsByteArray();
-            DirectSendOverTcp(GetTcpEndPoint(), package);
+            DirectSendOverTcp(new IPEndPoint(_nodeConnection.IpAddress, _nodeConnection.TcpPort), package);
             Log.Info("Scavenge command was sent.");
         }
 
@@ -460,7 +499,6 @@ namespace EventStore.TestClient.Commands.RunTestScenarios
             Log.Info("Starting to write {0} events to [{1}]", events, stream);
             var store = GetConnection();
             int eventVersion = 0;
-            var createTask = store.CreateStreamAsync(stream, Guid.NewGuid(), false, Encoding.UTF8.GetBytes("metadata"));
 
             Action<Task> fail = prevTask =>
             {
@@ -469,7 +507,7 @@ namespace EventStore.TestClient.Commands.RunTestScenarios
             };
 
             Action<Task> writeSingleEvent = null;
-            writeSingleEvent = prevTask =>
+            writeSingleEvent = _ =>
             {
                 if (eventVersion == events)
                 {
@@ -478,16 +516,17 @@ namespace EventStore.TestClient.Commands.RunTestScenarios
                     return;
                 }
 
-                eventVersion += 1;
                 var writeTask = store.AppendToStreamAsync(stream,
-                                                            eventVersion - 1,
-                                                            new[] { createEvent(eventVersion) });
+                                                          eventVersion - 1,
+                                                          new[] { createEvent(eventVersion) });
+
+                eventVersion += 1;
+
                 writeTask.ContinueWith(fail, TaskContinuationOptions.OnlyOnFaulted);
                 writeTask.ContinueWith(writeSingleEvent, TaskContinuationOptions.OnlyOnRanToCompletion);
             };
 
-            createTask.ContinueWith(writeSingleEvent, TaskContinuationOptions.OnlyOnRanToCompletion);
-            createTask.ContinueWith(fail, TaskContinuationOptions.OnlyOnFaulted);
+            writeSingleEvent(null);
 
             return resSource.Task;
         }
@@ -500,7 +539,6 @@ namespace EventStore.TestClient.Commands.RunTestScenarios
             var resSource = new TaskCompletionSource<object>();
             var store = GetConnection();
             int writtenCount = 0;
-            var createTask = store.CreateStreamAsync(stream, Guid.NewGuid(), false, Encoding.UTF8.GetBytes("metadata"));
 
             Action<Task> fail = prevTask =>
             {
@@ -509,7 +547,7 @@ namespace EventStore.TestClient.Commands.RunTestScenarios
             };
 
             Action<Task> writeBatch = null;
-            writeBatch = prevTask =>
+            writeBatch = _ =>
             {
                 if (writtenCount == eventCount)
                 {
@@ -518,19 +556,20 @@ namespace EventStore.TestClient.Commands.RunTestScenarios
                     return;
                 }
 
-                var startIndex = writtenCount + 1;
-                var endIndex = Math.Min(eventCount, startIndex + bucketSize - 1);
-                var events = Enumerable.Range(startIndex, endIndex - startIndex + 1).Select(createEvent).ToArray();
+                var startIndex = writtenCount;
+                var endIndex = Math.Min(eventCount, startIndex + bucketSize);
+                var events = Enumerable.Range(startIndex, endIndex - startIndex).Select(createEvent).ToArray();
 
                 writtenCount = endIndex;
 
-                var writeTask = store.AppendToStreamAsync(stream, startIndex - 1, events);
+                var expectedVersion = startIndex - 1;
+                var writeTask = store.AppendToStreamAsync(stream, expectedVersion, events);
+
                 writeTask.ContinueWith(fail, TaskContinuationOptions.OnlyOnFaulted);
                 writeTask.ContinueWith(writeBatch, TaskContinuationOptions.OnlyOnRanToCompletion);
             };
 
-            createTask.ContinueWith(writeBatch, TaskContinuationOptions.OnlyOnRanToCompletion);
-            createTask.ContinueWith(fail, TaskContinuationOptions.OnlyOnFaulted);
+            writeBatch(null);
 
             return resSource.Task;
         }
@@ -550,8 +589,6 @@ namespace EventStore.TestClient.Commands.RunTestScenarios
 
             int writtenCount = 0;
             EventStoreTransaction transaction = null;
-            var createTask = store.CreateStreamAsync(stream, Guid.NewGuid(), false, Encoding.UTF8.GetBytes("metadata"));
-            createTask.ContinueWith(fail, TaskContinuationOptions.OnlyOnFaulted);
 
             Action<Task> writeTransactionEvent = null;
             writeTransactionEvent = prevTask =>
@@ -568,25 +605,21 @@ namespace EventStore.TestClient.Commands.RunTestScenarios
                     return;
                 }
 
+                var writeTask = transaction.WriteAsync(createEvent(writtenCount));
+
                 writtenCount += 1;
 
-                var writeTask = transaction.WriteAsync(createEvent(writtenCount));
                 writeTask.ContinueWith(fail, TaskContinuationOptions.OnlyOnFaulted);
                 writeTask.ContinueWith(writeTransactionEvent, TaskContinuationOptions.OnlyOnRanToCompletion);
             };
 
-            createTask.ContinueWith(_ =>
+            var startTask = store.StartTransactionAsync(stream, -1);
+            startTask.ContinueWith(fail, TaskContinuationOptions.OnlyOnFaulted);
+            startTask.ContinueWith(t =>
             {
-                var startTask = store.StartTransactionAsync(stream, 0);
-                startTask.ContinueWith(fail, TaskContinuationOptions.OnlyOnFaulted);
-                startTask.ContinueWith(t =>
-                {
-                    transaction = t.Result;
-                    writeTransactionEvent(t);
-                }, TaskContinuationOptions.OnlyOnRanToCompletion);
-
+                transaction = t.Result;
+                writeTransactionEvent(t);
             }, TaskContinuationOptions.OnlyOnRanToCompletion);
-
 
             return resSource.Task;
         }

@@ -27,6 +27,7 @@
 // 
 using System;
 using System.Collections.Generic;
+using System.Threading;
 using EventStore.Common.Log;
 
 namespace EventStore.Common.Utils
@@ -39,9 +40,17 @@ namespace EventStore.Common.Utils
 
     public class Application
     {
+        public const string AdditionalCommitChecks = "ADDITIONAL_COMMIT_CHECKS";
+        public const string InfiniteMetastreams = "INFINITE_METASTREAMS";
+        public const string DumpStatistics = "DUMP_STATISTICS";
+        public const string DoNotTimeoutRequests = "DO_NOT_TIMEOUT_REQUESTS";
+        public const string AlwaysKeepScavenged = "ALWAYS_KEEP_SCAVENGED";
+        public const string DisableMergeChunks = "DISABLE_MERGE_CHUNKS";
+
         protected static readonly ILogger Log = LogManager.GetLoggerFor<Application>();
 
         private static Action<int> _exit;
+        private static int _exited;
 
         private static readonly HashSet<string> _defines = new HashSet<string>();
 
@@ -52,6 +61,11 @@ namespace EventStore.Common.Utils
             _exit = exitAction;
         }
 
+        public static void ExitSilent(int exitCode, string reason)
+        {
+            Exit(exitCode, reason, silent: true);
+        }
+
         public static void Exit(ExitCode exitCode, string reason)
         {
             Exit((int) exitCode, reason);
@@ -59,10 +73,25 @@ namespace EventStore.Common.Utils
 
         public static void Exit(int exitCode, string reason)
         {
+            Exit(exitCode, reason, silent: false);
+        }
+
+        private static void Exit(int exitCode, string reason, bool silent)
+        {
+            if (Interlocked.CompareExchange(ref _exited, 1, 0) != 0)
+                return;
+
             Ensure.NotNullOrEmpty(reason, "reason");
-            
-            Console.WriteLine("Exiting with exitcode {0}\nExit reason : {1}", exitCode, reason);
-            Log.Info("Exiting with exitcode {0}\nExit reason : {1}", exitCode, reason);
+
+            if (!silent)
+            {
+                var message = string.Format("Exiting with exit code: {0}.\nExit reason: {1}", exitCode, reason);
+                Console.WriteLine(message);
+                if (exitCode != 0)
+                    Log.Error(message);
+                else
+                    Log.Info(message);
+            }
 
             LogManager.Finish();
 

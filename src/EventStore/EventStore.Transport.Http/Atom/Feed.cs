@@ -31,6 +31,7 @@ using System.Xml;
 using System.Xml.Schema;
 using System.Xml.Serialization;
 using EventStore.Common.Utils;
+using Newtonsoft.Json;
 
 namespace EventStore.Transport.Http.Atom
 {
@@ -39,10 +40,8 @@ namespace EventStore.Transport.Http.Atom
         public string Title { get; set; }
         public string Id { get; set; }
         public string Updated { get; set; }
+        public string StreamId { get; set; }
         public PersonElement Author { get; set; }
-        public bool HeadOfStream { get; set; }
-        public string SelfUrl { get; set; }
-        public string ETag { get; set; }
 
         public List<LinkElement> Links { get; set; }
         public List<EntryElement> Entries { get; set; }
@@ -114,40 +113,31 @@ namespace EventStore.Transport.Http.Atom
 
             writer.WriteStartElement("feed", AtomSpecs.AtomV1Namespace);
 
-            writer.WriteElementString("title", Title);
-            writer.WriteElementString("id", Id);
-            writer.WriteElementString("updated", Updated);
+            writer.WriteElementString("title", AtomSpecs.AtomV1Namespace, Title);
+            writer.WriteElementString("id", AtomSpecs.AtomV1Namespace, Id);
+            writer.WriteElementString("updated", AtomSpecs.AtomV1Namespace, Updated);
             Author.WriteXml(writer);
 
             Links.ForEach(link => link.WriteXml(writer));
-            Entries.ForEach(entry => entry.WriteXml(writer));
+            Entries.ForEach(entry => entry.WriteXml(writer, usePrefix: false));
 
             writer.WriteEndElement();
-        }
-
-        public void SetHeadOfStream(bool headOfStream)
-        {
-            this.HeadOfStream = headOfStream;
-        }
-
-        public void SetSelfUrl(string self)
-        {
-            this.SelfUrl = self;
-        }
-
-        public void SetETag(string etag)
-        {
-            this.ETag = etag;
         }
     }
 
     public class EntryElement : IXmlSerializable
     {
+        private object _content;
         public string Title { get; set; }
         public string Id { get; set; }
         public string Updated { get; set; }
         public PersonElement Author { get; set; }
         public string Summary { get; set; }
+
+        public object Content {
+            get { return _content; } 
+            set { throw new NotSupportedException(); } 
+        }
 
         public List<LinkElement> Links { get; set; }
 
@@ -212,6 +202,11 @@ namespace EventStore.Transport.Http.Atom
 
         public void WriteXml(XmlWriter writer)
         {
+            WriteXml(writer, usePrefix: true);
+        }
+
+        public void WriteXml(XmlWriter writer, bool usePrefix)
+        {
             if (string.IsNullOrEmpty(Title))
                  ThrowHelper.ThrowSpecificationViolation("atom:entry elements MUST contain exactly one atom:title element.");
             if (string.IsNullOrEmpty(Id))
@@ -223,16 +218,32 @@ namespace EventStore.Transport.Http.Atom
             if (string.IsNullOrEmpty(Summary))
                 ThrowHelper.ThrowSpecificationViolation("atom:entry elements MUST contain an atom:summary element");
 
-            writer.WriteStartElement("entry");
+            if (usePrefix)
+                writer.WriteStartElement("atom", "entry", AtomSpecs.AtomV1Namespace);
+            else
+                writer.WriteStartElement("entry", AtomSpecs.AtomV1Namespace);
 
-            writer.WriteElementString("title", Title);
-            writer.WriteElementString("id", Id);
-            writer.WriteElementString("updated", Updated);
+            writer.WriteElementString("title", AtomSpecs.AtomV1Namespace, Title);
+            writer.WriteElementString("id", AtomSpecs.AtomV1Namespace, Id);
+            writer.WriteElementString("updated", AtomSpecs.AtomV1Namespace, Updated);
             Author.WriteXml(writer);
-            writer.WriteElementString("summary", Summary);
+            writer.WriteElementString("summary", AtomSpecs.AtomV1Namespace, Summary);
             Links.ForEach(link => link.WriteXml(writer));
-
+            if (Content != null)
+            {
+                var serializeObject = JsonConvert.SerializeObject(Content);
+                var deserializeXmlNode = JsonConvert.DeserializeXmlNode(serializeObject, "content");
+                writer.WriteStartElement("content", AtomSpecs.AtomV1Namespace);
+                writer.WriteAttributeString("type", ContentType.ApplicationXml);
+                deserializeXmlNode.DocumentElement.WriteContentTo(writer);
+                writer.WriteEndElement();
+            }
             writer.WriteEndElement();
+        }
+
+        public void SetContent(object content)
+        {
+            _content = content;
         }
     }
 
@@ -298,7 +309,7 @@ namespace EventStore.Transport.Http.Atom
             if (string.IsNullOrEmpty(Uri))
                 ThrowHelper.ThrowSpecificationViolation("atom:link elements MUST have an href attribute, whose value MUST be a IRI reference");
 
-            writer.WriteStartElement("link");
+            writer.WriteStartElement("link", AtomSpecs.AtomV1Namespace);
             writer.WriteAttributeString("href", Uri);
 
             if (Relation != null)
@@ -336,8 +347,8 @@ namespace EventStore.Transport.Http.Atom
             if (string.IsNullOrEmpty(Name))
                 ThrowHelper.ThrowSpecificationViolation("Person constructs MUST contain exactly one 'atom:name' element.");
 
-            writer.WriteStartElement("author");
-            writer.WriteElementString("name", Name);
+            writer.WriteStartElement("author", AtomSpecs.AtomV1Namespace);
+            writer.WriteElementString("name", AtomSpecs.AtomV1Namespace, Name);
             writer.WriteEndElement();
         }
     }

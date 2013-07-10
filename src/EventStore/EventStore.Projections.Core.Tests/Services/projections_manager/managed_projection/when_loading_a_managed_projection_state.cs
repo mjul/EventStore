@@ -28,6 +28,8 @@
 
 using System;
 using EventStore.Core.Messaging;
+using EventStore.Core.Services.TimerService;
+using EventStore.Core.Tests.Services.TimeService;
 using EventStore.Projections.Core.Messages;
 using EventStore.Projections.Core.Services;
 using EventStore.Projections.Core.Services.Management;
@@ -39,12 +41,16 @@ namespace EventStore.Projections.Core.Tests.Services.projections_manager.managed
     [TestFixture]
     public class when_loading_a_managed_projection_state : TestFixtureWithExistingEvents
     {
+        private new ITimeProvider _timeProvider;
+
         private ManagedProjection _mp;
 
         protected override void Given()
         {
+            _timeProvider = new FakeTimeProvider();
             _mp = new ManagedProjection(
-                _bus, Guid.NewGuid(), "name", null, _writeDispatcher, _readDispatcher, _bus, _handlerFactory);
+                _bus, Guid.NewGuid(), 1, "name", null, _writeDispatcher, _readDispatcher, _bus, _bus, _handlerFactory,
+                _timeProvider);
         }
 
         [Test, ExpectedException(typeof (ArgumentNullException))]
@@ -52,8 +58,8 @@ namespace EventStore.Projections.Core.Tests.Services.projections_manager.managed
         {
             _mp.InitializeNew(
                 new ProjectionManagementMessage.Post(
-                    new NoopEnvelope(), ProjectionMode.OneTime, "name", null, @"log(1);", enabled: true,
-                    checkpointsEnabled: false, emitEnabled: false), () => { });
+                    new NoopEnvelope(), ProjectionMode.OneTime, "name", ProjectionManagementMessage.RunAs.Anonymous,
+                    null, @"log(1);", enabled: true, checkpointsEnabled: false, emitEnabled: false), () => { });
         }
 
         [Test, ExpectedException(typeof (ArgumentException))]
@@ -61,8 +67,8 @@ namespace EventStore.Projections.Core.Tests.Services.projections_manager.managed
         {
             _mp.InitializeNew(
                 new ProjectionManagementMessage.Post(
-                    new NoopEnvelope(), ProjectionMode.OneTime, "name", "", @"log(1);", enabled: true,
-                    checkpointsEnabled: false, emitEnabled: false), () => { });
+                    new NoopEnvelope(), ProjectionMode.OneTime, "name", ProjectionManagementMessage.RunAs.Anonymous, "",
+                    @"log(1);", enabled: true, checkpointsEnabled: false, emitEnabled: false), () => { });
         }
 
         [Test, ExpectedException(typeof (ArgumentNullException))]
@@ -70,8 +76,8 @@ namespace EventStore.Projections.Core.Tests.Services.projections_manager.managed
         {
             _mp.InitializeNew(
                 new ProjectionManagementMessage.Post(
-                    new NoopEnvelope(), ProjectionMode.OneTime, "name", "JS", query: null, enabled: true,
-                    checkpointsEnabled: false, emitEnabled: false), () => { });
+                    new NoopEnvelope(), ProjectionMode.OneTime, "name", ProjectionManagementMessage.RunAs.Anonymous,
+                    "JS", query: null, enabled: true, checkpointsEnabled: false, emitEnabled: false), () => { });
         }
     }
 }

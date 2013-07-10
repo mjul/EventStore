@@ -27,6 +27,7 @@
 // 
 
 using System;
+using EventStore.Core.Bus;
 using EventStore.Core.Messages;
 using EventStore.Core.Tests.Bus.Helpers;
 using EventStore.Projections.Core.Messages;
@@ -39,7 +40,7 @@ namespace EventStore.Projections.Core.Tests.Services.core_projection
     public abstract class TestFixtureWithCoreProjection : TestFixtureWithExistingEvents
     {
         protected CoreProjection _coreProjection;
-        protected TestHandler<ProjectionSubscriptionManagement.Subscribe> _subscribeProjectionHandler;
+        protected TestHandler<ReaderSubscriptionManagement.Subscribe> _subscribeProjectionHandler;
         protected TestHandler<ClientMessage.WriteEvents> _writeEventHandler;
         protected Guid _firstWriteCorrelationId;
         protected FakeProjectionStateHandler _stateHandler;
@@ -50,11 +51,17 @@ namespace EventStore.Projections.Core.Tests.Services.core_projection
         private bool _createTempStreams = false;
         private bool _stopOnEof = false;
         private ProjectionConfig _projectionConfig;
+        protected ProjectionVersion _version;
+
+        protected override void Given1()
+        {
+            _version = new ProjectionVersion(1, 0, 0);
+        }
 
         [SetUp]
         public void setup()
         {
-            _subscribeProjectionHandler = new TestHandler<ProjectionSubscriptionManagement.Subscribe>();
+            _subscribeProjectionHandler = new TestHandler<ReaderSubscriptionManagement.Subscribe>();
             _writeEventHandler = new TestHandler<ClientMessage.WriteEvents>();
             _bus.Subscribe(_subscribeProjectionHandler);
             _bus.Subscribe(_writeEventHandler);
@@ -64,20 +71,32 @@ namespace EventStore.Projections.Core.Tests.Services.core_projection
                             ?? new FakeProjectionStateHandler(configureBuilder: _configureBuilderByQuerySource);
             _firstWriteCorrelationId = Guid.NewGuid();
             _projectionCorrelationId = Guid.NewGuid();
-            _projectionConfig = new ProjectionConfig(
+            _projectionConfig = new ProjectionConfig(null, 
                 _checkpointHandledThreshold, _checkpointUnhandledBytesThreshold, 1000, 250, true, true,
                 _createTempStreams, _stopOnEof);
-            _coreProjection = CoreProjection.CreateAndPrepapre(
-                "projection", _projectionCorrelationId, _bus, _stateHandler, _projectionConfig, _readDispatcher,
-                _writeDispatcher, null);
+            _coreProjection = CoreProjection.CreateAndPrepare(
+                "projection", _version, _projectionCorrelationId, _bus, _stateHandler, _projectionConfig, _readDispatcher,
+                _writeDispatcher, _subscriptionDispatcher, null, _timeProvider);
+            _bus.Subscribe<CoreProjectionProcessingMessage.CheckpointCompleted>(_coreProjection);
+            _bus.Subscribe<CoreProjectionProcessingMessage.CheckpointLoaded>(_coreProjection);
+            _bus.Subscribe<CoreProjectionProcessingMessage.PrerecordedEventsLoaded>(_coreProjection);
+            _bus.Subscribe<CoreProjectionProcessingMessage.RestartRequested>(_coreProjection);
+            _bus.Subscribe<CoreProjectionProcessingMessage.Failed>(_coreProjection);
+            _bus.Subscribe<EventReaderSubscriptionMessage.CommittedEventReceived>(_coreProjection);
+            _bus.Subscribe<EventReaderSubscriptionMessage.CheckpointSuggested>(_coreProjection);
+            _bus.Subscribe<EventReaderSubscriptionMessage.EofReached>(_coreProjection);
+            _bus.Subscribe<EventReaderSubscriptionMessage.ProgressChanged>(_coreProjection);
+            _bus.Subscribe<EventReaderSubscriptionMessage.NotAuthorized>(_coreProjection);
+            _bus.Subscribe(new AdHocHandler<ProjectionCoreServiceMessage.CoreTick>(tick => tick.Action()));
+            _bus.Subscribe(new AdHocHandler<ReaderCoreServiceMessage.ReaderTick>(tick => tick.Action()));
             PreWhen();
             When();
         }
 
-        protected virtual void PreWhen()
+        protected new virtual void PreWhen()
         {
         }
 
-        protected abstract void When();
+        protected new abstract void When();
     }
 }

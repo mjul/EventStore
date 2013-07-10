@@ -27,7 +27,6 @@
 // 
 
 using System;
-using System.IO;
 using System.Text;
 using EventStore.Common.Utils;
 using EventStore.Core.Data;
@@ -47,40 +46,44 @@ namespace EventStore.Core.Tests.Services.Storage
     public abstract class ReadIndexTestScenario : SpecificationWithDirectoryPerTestFixture
     {
         protected readonly int MaxEntriesInMemTable;
+        protected readonly int MetastreamMaxCount;
         protected TableIndex TableIndex;
         protected IReadIndex ReadIndex;
 
         protected TFChunkDb Db;
         protected TFChunkWriter Writer;
-        protected ICheckpoint WriterChecksum;
-        protected ICheckpoint ChaserChecksum;
+        protected ICheckpoint WriterCheckpoint;
+        protected ICheckpoint ChaserCheckpoint;
 
         private TFChunkScavenger _scavenger;
         private bool _scavenge;
         private bool _completeLastChunkOnScavenge;
+        private bool _mergeChunks;
 
-        protected ReadIndexTestScenario(int maxEntriesInMemTable = 20)
+        protected ReadIndexTestScenario(int maxEntriesInMemTable = 20, int metastreamMaxCount = 1)
         {
             Ensure.Positive(maxEntriesInMemTable, "maxEntriesInMemTable");
             MaxEntriesInMemTable = maxEntriesInMemTable;
+            MetastreamMaxCount = metastreamMaxCount;
         }
 
         public override void TestFixtureSetUp()
         {
             base.TestFixtureSetUp();
 
-            WriterChecksum = new InMemoryCheckpoint(0);
-            ChaserChecksum = new InMemoryCheckpoint(0);
+            WriterCheckpoint = new InMemoryCheckpoint(0);
+            ChaserCheckpoint = new InMemoryCheckpoint(0);
 
             Db = new TFChunkDb(new TFChunkDbConfig(PathName,
                                                    new VersionedPatternFileNamingStrategy(PathName, "chunk-"),
                                                    10000,
                                                    0,
-                                                   WriterChecksum,
-                                                   ChaserChecksum,
-                                                   new[] { WriterChecksum, ChaserChecksum }));
+                                                   WriterCheckpoint,
+                                                   ChaserCheckpoint,
+                                                   new InMemoryCheckpoint(-1),
+                                                   new InMemoryCheckpoint(-1)));
 
-            Db.OpenVerifyAndClean();
+            Db.Open();
             // create db
             Writer = new TFChunkWriter(Db);
             Writer.Open();
@@ -88,24 +91,25 @@ namespace EventStore.Core.Tests.Services.Storage
             Writer.Close();
             Writer = null;
 
-            WriterChecksum.Flush();
-            ChaserChecksum.Write(WriterChecksum.Read());
-            ChaserChecksum.Flush();
+            WriterCheckpoint.Flush();
+            ChaserCheckpoint.Write(WriterCheckpoint.Read());
+            ChaserCheckpoint.Flush();
 
             TableIndex = new TableIndex(GetFilePathFor("index"),
                                         () => new HashListMemTable(MaxEntriesInMemTable * 2),
                                         MaxEntriesInMemTable);
 
-            var reader = new TFChunkReader(Db, Db.Config.WriterCheckpoint);
             ReadIndex = new ReadIndex(new NoopPublisher(),
                                       2,
-                                      () => new TFChunkSequentialReader(Db, Db.Config.WriterCheckpoint, 0),
-                                      () => reader,
+                                      2,
+                                      () => new TFChunkReader(Db, Db.Config.WriterCheckpoint),
                                       TableIndex,
                                       new ByLengthHasher(),
-                                      new NoLRUCache<string, StreamCacheInfo>());
+                                      new NoLRUCache<string, StreamCacheInfo>(),
+                                      additionalCommitChecks: true,
+                                      metastreamMaxCount: MetastreamMaxCount);
 
-            ReadIndex.Build();
+            ReadIndex.Init(WriterCheckpoint.Read(), ChaserCheckpoint.Read());
 
             // scavenge must run after readIndex is built
             if (_scavenge)
@@ -113,7 +117,7 @@ namespace EventStore.Core.Tests.Services.Storage
                 if (_completeLastChunkOnScavenge)
                     Db.Manager.GetChunk(Db.Manager.ChunksCount - 1).Complete();
                 _scavenger = new TFChunkScavenger(Db, ReadIndex);
-                _scavenger.Scavenge(alwaysKeepScavenged: true);
+                _scavenger.Scavenge(alwaysKeepScavenged: true, mergeChunks: _mergeChunks);
             }
         }
 
@@ -132,35 +136,6 @@ namespace EventStore.Core.Tests.Services.Storage
 
         protected abstract void WriteTestScenario();
 
-        protected EventRecord WriteStreamCreated(string eventStreamId,
-                                                 string metadata = null, 
-                                                 DateTime? timestamp = null,
-                                                 Guid eventId = default(Guid))
-        {
-            var logPosition = WriterChecksum.ReadNonFlushed();
-            var rec = LogRecord.Prepare(logPosition,
-                                        eventId == default(Guid) ? Guid.NewGuid() : eventId,
-                                        Guid.NewGuid(),
-                                        logPosition,
-                                        0,
-                                        eventStreamId,
-                                        ExpectedVersion.NoStream,
-                                        PrepareFlags.Data | PrepareFlags.IsJson | PrepareFlags.TransactionBegin | PrepareFlags.TransactionEnd,
-                                        SystemEventTypes.StreamCreated,
-                                        LogRecord.NoData,
-                                        metadata == null ? LogRecord.NoData : Encoding.UTF8.GetBytes(metadata),
-                                        timestamp);
-
-            long pos;
-            Assert.IsTrue(Writer.Write(rec, out pos));
-
-            var commit = LogRecord.Commit(WriterChecksum.ReadNonFlushed(), rec.CorrelationId, rec.LogPosition, 0);
-            Assert.IsTrue(Writer.Write(commit, out pos));
-
-            var eventRecord = new EventRecord(0, rec);
-            return eventRecord;
-        }
-
         protected EventRecord WriteSingleEvent(string eventStreamId, 
                                                int eventNumber, 
                                                string data,
@@ -168,13 +143,13 @@ namespace EventStore.Core.Tests.Services.Storage
                                                Guid eventId = default(Guid),
                                                bool retryOnFail = false)
         {
-            var prepare = LogRecord.SingleWrite(WriterChecksum.ReadNonFlushed(),
+            var prepare = LogRecord.SingleWrite(WriterCheckpoint.ReadNonFlushed(),
                                                 eventId == default(Guid) ? Guid.NewGuid() : eventId,
                                                 Guid.NewGuid(),
                                                 eventStreamId,
                                                 eventNumber - 1,
                                                 "some-type",
-                                                Encoding.UTF8.GetBytes(data),
+                                                Helper.UTF8NoBom.GetBytes(data),
                                                 null,
                                                 timestamp);
             long pos;
@@ -202,7 +177,29 @@ namespace EventStore.Core.Tests.Services.Storage
                 }
             }
 
-            var commit = LogRecord.Commit(WriterChecksum.ReadNonFlushed(), prepare.CorrelationId, prepare.LogPosition, eventNumber);
+            var commit = LogRecord.Commit(WriterCheckpoint.ReadNonFlushed(), prepare.CorrelationId, prepare.LogPosition, eventNumber);
+            Assert.IsTrue(Writer.Write(commit, out pos));
+
+            var eventRecord = new EventRecord(eventNumber, prepare);
+            return eventRecord;
+        }
+
+        protected EventRecord WriteStreamMetadata(string eventStreamId, int eventNumber, string metadata, DateTime? timestamp = null)
+        {
+            var prepare = LogRecord.SingleWrite(WriterCheckpoint.ReadNonFlushed(),
+                                                Guid.NewGuid(),
+                                                Guid.NewGuid(),
+                                                SystemStreams.MetastreamOf(eventStreamId),
+                                                eventNumber - 1,
+                                                SystemEventTypes.StreamMetadata,
+                                                Helper.UTF8NoBom.GetBytes(metadata),
+                                                null,
+                                                timestamp ?? DateTime.UtcNow,
+                                                PrepareFlags.IsJson);
+            long pos;
+            Assert.IsTrue(Writer.Write(prepare, out pos));
+
+            var commit = LogRecord.Commit(WriterCheckpoint.ReadNonFlushed(), prepare.CorrelationId, prepare.LogPosition, eventNumber);
             Assert.IsTrue(Writer.Write(commit, out pos));
 
             var eventRecord = new EventRecord(eventNumber, prepare);
@@ -211,16 +208,16 @@ namespace EventStore.Core.Tests.Services.Storage
 
         protected EventRecord WriteTransactionBegin(string eventStreamId, int expectedVersion, int eventNumber, string eventData)
         {
-            var prepare = LogRecord.Prepare(WriterChecksum.ReadNonFlushed(),
+            var prepare = LogRecord.Prepare(WriterCheckpoint.ReadNonFlushed(),
                                             Guid.NewGuid(),
                                             Guid.NewGuid(),
-                                            WriterChecksum.ReadNonFlushed(),
+                                            WriterCheckpoint.ReadNonFlushed(),
                                             0,
                                             eventStreamId,
                                             expectedVersion,
                                             PrepareFlags.Data | PrepareFlags.TransactionBegin,
                                             "some-type",
-                                            Encoding.UTF8.GetBytes(eventData),
+                                            Helper.UTF8NoBom.GetBytes(eventData),
                                             null);
             long pos;
             Assert.IsTrue(Writer.Write(prepare, out pos));
@@ -229,7 +226,7 @@ namespace EventStore.Core.Tests.Services.Storage
 
         protected PrepareLogRecord WriteTransactionBegin(string eventStreamId, int expectedVersion)
         {
-            var prepare = LogRecord.TransactionBegin(WriterChecksum.ReadNonFlushed(), Guid.NewGuid(), eventStreamId, expectedVersion);
+            var prepare = LogRecord.TransactionBegin(WriterCheckpoint.ReadNonFlushed(), Guid.NewGuid(), eventStreamId, expectedVersion);
             long pos;
             Assert.IsTrue(Writer.Write(prepare, out pos));
             return prepare;
@@ -244,7 +241,7 @@ namespace EventStore.Core.Tests.Services.Storage
                                                     PrepareFlags flags,
                                                     bool retryOnFail = false)
         {
-            var prepare = LogRecord.Prepare(WriterChecksum.ReadNonFlushed(),
+            var prepare = LogRecord.Prepare(WriterCheckpoint.ReadNonFlushed(),
                                             correlationId,
                                             Guid.NewGuid(),
                                             transactionPos,
@@ -253,7 +250,7 @@ namespace EventStore.Core.Tests.Services.Storage
                                             ExpectedVersion.Any,
                                             flags,
                                             "some-type",
-                                            Encoding.UTF8.GetBytes(eventData),
+                                            Helper.UTF8NoBom.GetBytes(eventData),
                                             null);
 
             if (retryOnFail)
@@ -288,7 +285,7 @@ namespace EventStore.Core.Tests.Services.Storage
 
         protected PrepareLogRecord WriteTransactionEnd(Guid correlationId, long transactionId, string eventStreamId)
         {
-            var prepare = LogRecord.TransactionEnd(WriterChecksum.ReadNonFlushed(),
+            var prepare = LogRecord.TransactionEnd(WriterCheckpoint.ReadNonFlushed(),
                                                    correlationId,
                                                    Guid.NewGuid(),
                                                    transactionId,
@@ -305,13 +302,13 @@ namespace EventStore.Core.Tests.Services.Storage
                                                 string data = null)
         {
             long pos;
-            var prepare = LogRecord.SingleWrite(WriterChecksum.ReadNonFlushed(),
-                                                eventId == default(Guid) ? Guid.NewGuid() : eventId,
+            var prepare = LogRecord.SingleWrite(WriterCheckpoint.ReadNonFlushed(),
                                                 Guid.NewGuid(),
+                                                eventId == default(Guid) ? Guid.NewGuid() : eventId,
                                                 streamId,
                                                 expectedVersion,
                                                 eventType.IsEmptyString() ? "some-type" : eventType,
-                                                data.IsEmptyString() ? LogRecord.NoData : Encoding.UTF8.GetBytes(data),
+                                                data.IsEmptyString() ? LogRecord.NoData : Helper.UTF8NoBom.GetBytes(data),
                                                 LogRecord.NoData,
                                                 DateTime.UtcNow);
             Assert.IsTrue(Writer.Write(prepare, out pos));
@@ -321,7 +318,7 @@ namespace EventStore.Core.Tests.Services.Storage
 
         protected CommitLogRecord WriteCommit(long preparePos, string eventStreamId, int eventNumber)
         {
-            var commit = LogRecord.Commit(WriterChecksum.ReadNonFlushed(), Guid.NewGuid(), preparePos, eventNumber);
+            var commit = LogRecord.Commit(WriterCheckpoint.ReadNonFlushed(), Guid.NewGuid(), preparePos, eventNumber);
             long pos;
             Assert.IsTrue(Writer.Write(commit, out pos));
             return commit;
@@ -329,7 +326,7 @@ namespace EventStore.Core.Tests.Services.Storage
 
         protected long WriteCommit(Guid correlationId, long transactionId, string eventStreamId, int eventNumber)
         {
-            var commit = LogRecord.Commit(WriterChecksum.ReadNonFlushed(), correlationId, transactionId, eventNumber);
+            var commit = LogRecord.Commit(WriterCheckpoint.ReadNonFlushed(), correlationId, transactionId, eventNumber);
             long pos;
             Assert.IsTrue(Writer.Write(commit, out pos));
             return commit.LogPosition;
@@ -337,13 +334,13 @@ namespace EventStore.Core.Tests.Services.Storage
 
         protected EventRecord WriteDelete(string eventStreamId)
         {
-            var prepare = LogRecord.DeleteTombstone(WriterChecksum.ReadNonFlushed(),
-                                                           Guid.NewGuid(),
-                                                           eventStreamId,
-                                                           ExpectedVersion.Any);
+            var prepare = LogRecord.DeleteTombstone(WriterCheckpoint.ReadNonFlushed(),
+                                                    Guid.NewGuid(),
+                                                    eventStreamId,
+                                                    ExpectedVersion.Any);
             long pos;
             Assert.IsTrue(Writer.Write(prepare, out pos));
-            var commit = LogRecord.Commit(WriterChecksum.ReadNonFlushed(),
+            var commit = LogRecord.Commit(WriterCheckpoint.ReadNonFlushed(),
                                           prepare.CorrelationId,
                                           prepare.LogPosition,
                                           EventNumber.DeletedStream);
@@ -352,18 +349,43 @@ namespace EventStore.Core.Tests.Services.Storage
             return new EventRecord(EventNumber.DeletedStream, prepare);
         }
 
+        protected PrepareLogRecord WriteDeletePrepare(string eventStreamId)
+        {
+            var prepare = LogRecord.DeleteTombstone(WriterCheckpoint.ReadNonFlushed(),
+                                                    Guid.NewGuid(),
+                                                    eventStreamId,
+                                                    ExpectedVersion.Any);
+            long pos;
+            Assert.IsTrue(Writer.Write(prepare, out pos));
+
+            return prepare;
+        }
+
+        protected CommitLogRecord WriteDeleteCommit(PrepareLogRecord prepare)
+        {
+            long pos;
+            var commit = LogRecord.Commit(WriterCheckpoint.ReadNonFlushed(),
+                                          prepare.CorrelationId,
+                                          prepare.LogPosition,
+                                          EventNumber.DeletedStream);
+            Assert.IsTrue(Writer.Write(commit, out pos));
+
+            return commit;
+        }
+
         protected TFPos GetBackwardReadPos()
         {
-            var pos = new TFPos(WriterChecksum.ReadNonFlushed(), WriterChecksum.ReadNonFlushed());
+            var pos = new TFPos(WriterCheckpoint.ReadNonFlushed(), WriterCheckpoint.ReadNonFlushed());
             return pos;
         }
 
-        protected void Scavenge(bool completeLast)
+        protected void Scavenge(bool completeLast, bool mergeChunks)
         {
             if (_scavenge)
                 throw new InvalidOperationException("Scavenge can be executed only once in ReadIndexTestScenario");
             _scavenge = true;
             _completeLastChunkOnScavenge = completeLast;
+            _mergeChunks = mergeChunks;
         }
     }
 }

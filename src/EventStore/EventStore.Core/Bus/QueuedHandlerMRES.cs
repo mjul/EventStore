@@ -29,6 +29,7 @@ using System;
 using System.Threading;
 using EventStore.Common.Log;
 using EventStore.Common.Utils;
+using EventStore.Core.Messages;
 using EventStore.Core.Messaging;
 using EventStore.Core.Services.Monitoring.Stats;
 
@@ -56,10 +57,10 @@ namespace EventStore.Core.Bus
 
         private Thread _thread;
         private volatile bool _stop;
+        private volatile bool _starving;
         private readonly ManualResetEventSlim _stopped = new ManualResetEventSlim(true);
         private readonly TimeSpan _threadStopWaitTimeout;
 
-        // monitoring
         private readonly QueueMonitor _queueMonitor;
         private readonly QueueStatsCollector _queueStats;
         
@@ -116,12 +117,16 @@ namespace EventStore.Core.Bus
                 {
                     if (!_queue.TryDequeue(out msg))
                     {
+                        _starving = true;
+
                         _queueStats.EnterIdle();
-                        _msgAddEvent.Wait(500);
+                        _msgAddEvent.Wait(100);
+                        _msgAddEvent.Reset();
+
+                        _starving = false;
                     }
                     else
                     {
-                        _msgAddEvent.Reset();
                         _queueStats.EnterBusy();
 
                         var cnt = _queue.Count;
@@ -135,7 +140,13 @@ namespace EventStore.Core.Bus
 
                             var elapsed = DateTime.UtcNow - start;
                             if (elapsed > _slowMsgThreshold)
-                                Log.Trace("SLOW QUEUE MSG [{0}]: {1} - {2}ms. Q: {3}/{4}.", Name, _queueStats.InProgressMessage.Name, (int)elapsed.TotalMilliseconds, cnt, _queue.Count);
+                            {
+                                Log.Trace("SLOW QUEUE MSG [{0}]: {1} - {2}ms. Q: {3}/{4}.",
+                                          Name, _queueStats.InProgressMessage.Name, (int)elapsed.TotalMilliseconds, cnt, _queue.Count);
+                                if (elapsed > QueuedHandler.VerySlowMsgThreshold && !(msg is SystemMessage.SystemInit))
+                                    Log.Error("---!!! VERY SLOW QUEUE MSG [{0}]: {1} - {2}ms. Q: {3}/{4}.",
+                                              Name, _queueStats.InProgressMessage.Name, (int)elapsed.TotalMilliseconds, cnt, _queue.Count);
+                            }
                         }
                         else
                         {
@@ -160,7 +171,8 @@ namespace EventStore.Core.Bus
         {
             Ensure.NotNull(message, "message");
             _queue.Enqueue(message);
-            _msgAddEvent.Set();
+            if (_starving)
+                _msgAddEvent.Set();
         }
 
         public void Handle(Message message)

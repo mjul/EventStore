@@ -34,6 +34,7 @@ using EventStore.Core.Bus;
 using EventStore.Core.Messages;
 using EventStore.Core.Messaging;
 using EventStore.Core.Services.Transport.Http;
+using EventStore.Core.Services.Transport.Http.Authentication;
 using EventStore.Transport.Http;
 using EventStore.Transport.Http.Client;
 
@@ -59,6 +60,7 @@ namespace EventStore.Core.Tests.Services.Transport.Http
 
         private InMemoryBus _bus;
         private HttpService _service;
+        private MultiQueuedHandler _multiQueuedHandler;
         private HttpAsyncClient _client;
 
         private readonly IPEndPoint _serverEndPoint;
@@ -73,8 +75,18 @@ namespace EventStore.Core.Tests.Services.Transport.Http
         {
             _bus = new InMemoryBus(string.Format("bus_{0}", _serverEndPoint.Port));
 
-            _service = new HttpService(ServiceAccessibility.Private, _bus, 1, _serverEndPoint.ToHttpUrl());
-            _client = new HttpAsyncClient();
+            {
+
+                var pipelineBus = InMemoryBus.CreateTest();
+                var queue = new QueuedHandlerThreadPool(pipelineBus, "Test", true, TimeSpan.FromMilliseconds(50));
+                _multiQueuedHandler = new MultiQueuedHandler(new IQueuedHandler[]{queue}, null);
+                var authenticationProviders = new AuthenticationProvider[] {new AnonymousAuthenticationProvider()};
+
+                _service = new HttpService(ServiceAccessibility.Private, _bus, new NaiveUriRouter(),
+                                           _multiQueuedHandler, _serverEndPoint.ToHttpUrl());
+                HttpService.CreateAndSubscribePipeline(pipelineBus, authenticationProviders);
+                _client = new HttpAsyncClient();
+            }
 
             HttpBootstrap.Subscribe(_bus, _service);
         }
@@ -84,6 +96,7 @@ namespace EventStore.Core.Tests.Services.Transport.Http
             HttpBootstrap.Unsubscribe(_bus, _service);
 
             _service.Shutdown();
+            _multiQueuedHandler.Stop();
         }
 
         public void Publish(Message message)

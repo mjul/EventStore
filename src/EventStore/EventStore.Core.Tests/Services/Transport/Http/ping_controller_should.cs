@@ -30,8 +30,9 @@ using System;
 using System.Net;
 using EventStore.Common.Utils;
 using EventStore.Core.Messages;
-using EventStore.Core.Services.Transport.Http.Codecs;
+using EventStore.Core.Tests.Helpers;
 using EventStore.Transport.Http;
+using EventStore.Transport.Http.Codecs;
 using NUnit.Framework;
 
 namespace EventStore.Core.Tests.Services.Transport.Http
@@ -45,7 +46,8 @@ namespace EventStore.Core.Tests.Services.Transport.Http
 
         public ping_controller_should()
         {
-            _serverEndPoint = new IPEndPoint(IPAddress.Loopback, 7778);
+            var port = PortsHelper.GetAvailablePort(IPAddress.Loopback);
+            _serverEndPoint = new IPEndPoint(IPAddress.Loopback, port);
             _portableServer = new PortableServer(_serverEndPoint);
         }
 
@@ -59,6 +61,12 @@ namespace EventStore.Core.Tests.Services.Transport.Http
         public void TearDown()
         {
             _portableServer.TearDown();
+        }
+
+        [TestFixtureTearDown]
+        public void TestFixtureTearDown()
+        {
+            PortsHelper.ReturnPort(_serverEndPoint.Port);
         }
 
         [Test]

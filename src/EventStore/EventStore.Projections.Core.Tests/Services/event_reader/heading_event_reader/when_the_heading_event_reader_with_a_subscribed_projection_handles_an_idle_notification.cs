@@ -28,7 +28,9 @@
 
 using System;
 using System.Linq;
+using EventStore.Core.Data;
 using EventStore.Core.Services.TimerService;
+using EventStore.Core.Tests.Helpers;
 using EventStore.Projections.Core.Messages;
 using EventStore.Projections.Core.Services.Processing;
 using EventStore.Projections.Core.Tests.Services.projections_manager.managed_projection;
@@ -38,46 +40,46 @@ namespace EventStore.Projections.Core.Tests.Services.event_reader.heading_event_
 {
     [TestFixture]
     public class when_the_heading_event_reader_with_a_subscribed_projection_handles_an_idle_notification :
-        TestFixtureWithReadWriteDisaptchers
+        TestFixtureWithReadWriteDispatchers
     {
         private HeadingEventReader _point;
-        private Exception _exception;
+        //private Exception _exception;
         private Guid _distibutionPointCorrelationId;
-        private FakeProjectionSubscription _subscription;
+        private FakeReaderSubscription _subscription;
         private Guid _projectionSubscriptionId;
 
         [SetUp]
         public void setup()
         {
-            _exception = null;
+            //_exception = null;
             try
             {
                 _point = new HeadingEventReader(10);
             }
-            catch (Exception ex)
+            catch (Exception)
             {
-                _exception = ex;
+                //_exception = ex;
             }
 
             _distibutionPointCorrelationId = Guid.NewGuid();
             _point.Start(
                 _distibutionPointCorrelationId,
                 new TransactionFileEventReader(
-                    _bus, _distibutionPointCorrelationId, new EventPosition(0, -1), new RealTimeProvider()));
+                    _bus, _distibutionPointCorrelationId, null, new TFPos(0, -1), new RealTimeProvider()));
             DateTime timestamp = DateTime.UtcNow;
             _point.Handle(
-                new ProjectionCoreServiceMessage.CommittedEventDistributed(
-                    _distibutionPointCorrelationId, new EventPosition(20, 10), "stream", 10, false,
-                    ResolvedEvent.Sample(Guid.NewGuid(), "type", false, new byte[0], new byte[0], timestamp)));
+                ReaderSubscriptionMessage.CommittedEventDistributed.Sample(
+                    _distibutionPointCorrelationId, new TFPos(20, 10), "stream", 10, false, Guid.NewGuid(),
+                    "type", false, new byte[0], new byte[0], timestamp));
             _point.Handle(
-                new ProjectionCoreServiceMessage.CommittedEventDistributed(
-                    _distibutionPointCorrelationId, new EventPosition(40, 30), "stream", 11, false,
-                    ResolvedEvent.Sample(Guid.NewGuid(), "type", false, new byte[0], new byte[0], timestamp.AddMilliseconds(1))));
-            _subscription = new FakeProjectionSubscription();
+                ReaderSubscriptionMessage.CommittedEventDistributed.Sample(
+                    _distibutionPointCorrelationId, new TFPos(40, 30), "stream", 11, false, Guid.NewGuid(),
+                    "type", false, new byte[0], new byte[0], timestamp.AddMilliseconds(1)));
+            _subscription = new FakeReaderSubscription();
             _projectionSubscriptionId = Guid.NewGuid();
-            var subscribed = _point.TrySubscribe(_projectionSubscriptionId, _subscription, 30);
+            _point.TrySubscribe(_projectionSubscriptionId, _subscription, 30);
             _point.Handle(
-                new ProjectionCoreServiceMessage.EventReaderIdle(
+                new ReaderSubscriptionMessage.EventReaderIdle(
                     _distibutionPointCorrelationId, timestamp.AddMilliseconds(1100)));
         }
 
@@ -87,6 +89,5 @@ namespace EventStore.Projections.Core.Tests.Services.event_reader.heading_event_
         {
             Assert.AreEqual(1, _subscription.ReceivedIdleNotifications.Count());
         }
-
     }
 }

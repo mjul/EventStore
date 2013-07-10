@@ -51,13 +51,13 @@
     <Reference Include="System.Core" />
   </ItemGroup>
   <ItemGroup>
-    <Compile Include="..\EventStore.Common\Properties\AssemblyVersion.cs">
-      <Link>Properties\AssemblyVersion.cs</Link>
-    </Compile>
     <Compile Include="Client.cs" />
     <Compile Include="ClientOptions.cs" />
     <Compile Include="CommandProcessorContext.cs" />
     <Compile Include="CommandsProcessor.cs" />
+    <Compile Include="Commands\SubscriptionStressTestProcessor.cs" />
+    <Compile Include="Commands\RunTestScenarios\NodeConnectionInfo.cs" />
+    <Compile Include="Commands\WriteFloodClientApiProcessor.cs" />
     <Compile Include="Commands\ReadAllProcessor.cs" />
     <Compile Include="Commands\RunTestScenariosProcessor.cs" />
     <Compile Include="Commands\RunTestScenarios\BankAccountEvent.cs" />
@@ -70,15 +70,13 @@
     </Compile>
     <Compile Include="Commands\RunTestScenarios\ProjectionsKillScenario.cs" />
     <Compile Include="Commands\RunTestScenarios\IScenario.cs" />
-    <Compile Include="Commands\RunTestScenarios\ClientApiLogger.cs" />
     <Compile Include="Commands\RunTestScenarios\LoopingScenario.cs" />
-    <Compile Include="Commands\RunTestScenarios\ProjKillForeachScenario.cs" />
+    <Compile Include="Commands\RunTestScenarios\ProjForeachForcedCommonNameScenario.cs" />
     <Compile Include="Commands\RunTestScenarios\LoopingProjTranWriteScenario.cs" />
     <Compile Include="Commands\RunTestScenarios\ScenarioBase.cs" />
     <Compile Include="Commands\RunTestScenarios\TestEvent.cs" />
     <Compile Include="Commands\RunTestScenarios\WriteMode.cs" />
     <Compile Include="Commands\ScavengeProcessor.cs" />
-    <Compile Include="Commands\CreateStreamProcessor.cs" />
     <Compile Include="Commands\DeleteProcessor.cs" />
     <Compile Include="Commands\DvuBasic\BankAccountBasicProducer.cs" />
     <Compile Include="Commands\DvuBasic\BankAccountEventFactory.cs" />
@@ -130,6 +128,10 @@
       <Project>{B4C9BE3D-43B1-4049-A23A-5DC53DB3F0B0}</Project>
       <Name>EventStore.Common</Name>
     </ProjectReference>
+    <ProjectReference Include="..\EventStore.Core.Tests\EventStore.Core.Tests.csproj">
+      <Project>{6bc8929c-ffd0-4ee6-acf8-bdf4a3855af4}</Project>
+      <Name>EventStore.Core.Tests</Name>
+    </ProjectReference>
     <ProjectReference Include="..\EventStore.Core\EventStore.Core.csproj">
       <Project>{D42A5833-4F20-4FCC-B364-6207AE016732}</Project>
       <Name>EventStore.Core</Name>
@@ -166,8 +168,9 @@
     </BootstrapperPackage>
   </ItemGroup>
   <ItemGroup>
-    <None Include="..\EventStore.SingleNode\NLog.config">
+    <None Include="..\EventStore.Common\Log\NLog.config">
       <Link>NLog.config</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />

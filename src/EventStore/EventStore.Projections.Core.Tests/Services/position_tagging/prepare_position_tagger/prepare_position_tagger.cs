@@ -28,6 +28,8 @@
 
 using System;
 using System.Text;
+using EventStore.Common.Utils;
+using EventStore.Core.Data;
 using EventStore.Projections.Core.Messages;
 using EventStore.Projections.Core.Services.Processing;
 using NUnit.Framework;
@@ -37,22 +39,28 @@ namespace EventStore.Projections.Core.Tests.Services.position_tagging.prepare_po
     [TestFixture]
     public class prepare_position_tagger
     {
-        private ProjectionCoreServiceMessage.CommittedEventDistributed _zeroEvent;
-        private ProjectionCoreServiceMessage.CommittedEventDistributed _firstEvent;
-        private ProjectionCoreServiceMessage.CommittedEventDistributed _secondEvent;
+        private ReaderSubscriptionMessage.CommittedEventDistributed _zeroEvent;
+        private ReaderSubscriptionMessage.CommittedEventDistributed _firstEvent;
+        private ReaderSubscriptionMessage.CommittedEventDistributed _secondEvent;
 
         [SetUp]
         public void setup()
         {
-            _zeroEvent = new ProjectionCoreServiceMessage.CommittedEventDistributed(Guid.NewGuid(), new EventPosition(10, 0), "stream", 0, false, ResolvedEvent.Sample(Guid.NewGuid(), "StreamCreated", false, new byte[0], new byte[0]));
-            _firstEvent = new ProjectionCoreServiceMessage.CommittedEventDistributed(Guid.NewGuid(), new EventPosition(0, 20), "stream", 1, false, ResolvedEvent.Sample(Guid.NewGuid(), "Data", true, Encoding.UTF8.GetBytes("{}"), new byte[0]));
-            _secondEvent = new ProjectionCoreServiceMessage.CommittedEventDistributed(Guid.NewGuid(), new EventPosition(50, 40), "stream", 2, false, ResolvedEvent.Sample(Guid.NewGuid(), "Data", true, Encoding.UTF8.GetBytes("{}"), new byte[0]));
+            _zeroEvent = ReaderSubscriptionMessage.CommittedEventDistributed.Sample(
+                Guid.NewGuid(), new TFPos(10, 0), "stream", 0, false, Guid.NewGuid(), "StreamCreated", false,
+                new byte[0], new byte[0]);
+            _firstEvent = ReaderSubscriptionMessage.CommittedEventDistributed.Sample(
+                Guid.NewGuid(), new TFPos(0, 20), "stream", 1, false, Guid.NewGuid(), "Data", true,
+                Helper.UTF8NoBom.GetBytes("{}"), new byte[0]);
+            _secondEvent = ReaderSubscriptionMessage.CommittedEventDistributed.Sample(
+                Guid.NewGuid(), new TFPos(50, 40), "stream", 2, false, Guid.NewGuid(), "Data", true,
+                Helper.UTF8NoBom.GetBytes("{}"), new byte[0]);
         }
 
         [Test]
         public void can_be_created()
         {
-            var t = new PreparePositionTagger();
+            new PreparePositionTagger();
         }
 
         [Test]
@@ -130,6 +138,5 @@ namespace EventStore.Projections.Core.Tests.Services.position_tagging.prepare_po
             Assert.AreEqual(zeroEvent2, zeroEvent);
             Assert.AreEqual(second, second2);
         }
-
     }
 }

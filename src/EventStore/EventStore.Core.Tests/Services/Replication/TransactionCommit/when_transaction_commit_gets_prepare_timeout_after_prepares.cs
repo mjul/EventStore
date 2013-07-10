@@ -26,6 +26,7 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 // 
 
+using System;
 using System.Collections.Generic;
 using EventStore.Core.Messages;
 using EventStore.Core.Messaging;
@@ -40,26 +41,26 @@ namespace EventStore.Core.Tests.Services.Replication.TransactionCommit
     {
         protected override TwoPhaseRequestManagerBase OnManager(FakePublisher publisher)
         {
-            return new TransactionCommitTwoPhaseRequestManager(publisher, 3, 3);
+            return new TransactionCommitTwoPhaseRequestManager(publisher, 3, 3, PrepareTimeout, CommitTimeout);
         }
 
         protected override IEnumerable<Message> WithInitialMessages()
         {
-            yield return new StorageMessage.TransactionCommitRequestCreated(CorrelationId, Envelope, 4);
-            yield return new StorageMessage.PrepareAck(CorrelationId, SomeEndPoint, 1, PrepareFlags.SingleWrite);
-            yield return new StorageMessage.PrepareAck(CorrelationId, SomeEndPoint, 1, PrepareFlags.SingleWrite);
-            yield return new StorageMessage.PrepareAck(CorrelationId, SomeEndPoint, 1, PrepareFlags.SingleWrite);
+            yield return new ClientMessage.TransactionCommit(InternalCorrId, ClientCorrId, Envelope, true, 4, null);
+            yield return new StorageMessage.PrepareAck(InternalCorrId, 1, PrepareFlags.SingleWrite);
+            yield return new StorageMessage.PrepareAck(InternalCorrId, 1, PrepareFlags.SingleWrite);
+            yield return new StorageMessage.PrepareAck(InternalCorrId, 1, PrepareFlags.SingleWrite);
         }
 
         protected override Message When()
         {
-            return new StorageMessage.PreparePhaseTimeout(CorrelationId);
+            return new StorageMessage.RequestManagerTimerTick(DateTime.UtcNow + TimeSpan.FromTicks(CommitTimeout.Ticks / 2));
         }
 
         [Test]
         public void no_messages_are_published()
         {
-            Assert.That(produced.Count == 0);
+            Assert.That(Produced.Count == 0);
         }
 
         [Test]

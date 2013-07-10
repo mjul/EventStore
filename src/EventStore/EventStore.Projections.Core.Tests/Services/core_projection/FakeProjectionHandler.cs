@@ -79,7 +79,7 @@ namespace EventStore.Projections.Core.Tests.Services.core_projection
             {
                 builder.FromAll();
                 builder.AllEvents();
-                builder.SetEmitStateUpdated(true);
+                builder.SetDefinesStateTransform();
             }
         }
 
@@ -109,71 +109,98 @@ namespace EventStore.Projections.Core.Tests.Services.core_projection
         }
 
         public bool ProcessEvent(
-            string partition, CheckpointTag eventPosition, string streamId, string eventType, string category, Guid eventId, int sequenceNumber,
-            string metadata, string data, out string newState, out EmittedEvent[] emittedEvents)
+            string partition, CheckpointTag eventPosition, string category1, ResolvedEvent data,
+            out string newState, out EmittedEvent[] emittedEvents)
         {
             if (_failOnProcessEvent)
                 throw new Exception("PROCESS_EVENT_FAILED");
-            _lastProcessedStreamId = streamId;
-            _lastProcessedEventType = eventType;
-            _lastProcessedEventId = eventId;
-            _lastProcessedSequencenumber = sequenceNumber;
-            _lastProcessedMetadata = metadata;
-            _lastProcessedData = data;
+            _lastProcessedStreamId = data.EventStreamId;
+            _lastProcessedEventType = data.EventType;
+            _lastProcessedEventId = data.EventId;
+            _lastProcessedSequencenumber = data.EventSequenceNumber;
+            _lastProcessedMetadata = data.Metadata;
+            _lastProcessedData = data.Data;
             _lastPartition = partition;
 
             _eventsProcessed++;
-            switch (eventType)
+            switch (data.EventType)
             {
                 case "skip_this_type":
-                    _loadedState = newState = null;
+                    newState = null;
                     emittedEvents = null;
                     return false;
                 case "handle_this_type":
-                    _loadedState = newState = data;
+                    _loadedState = newState = data.Data;
                     emittedEvents = null;
                     return true;
                 case "append":
-                    _loadedState = newState = _loadedState + data;
+                    _loadedState = newState = _loadedState + data.Data;
                     emittedEvents = null;
                     return true;
                 case "no_state_emit1_type":
                     _loadedState = newState = "";
                     emittedEvents = new[]
-                        {new EmittedEvent(_emit1StreamId, Guid.NewGuid(), _emit1EventType, _emit1Data, eventPosition, null),};
+                        {
+                            new EmittedDataEvent(
+                                _emit1StreamId, Guid.NewGuid(), _emit1EventType, _emit1Data, null, eventPosition, null),
+                        };
                     return true;
                 case "emit1_type":
-                    _loadedState = newState = data;
-                    emittedEvents = new[] { new EmittedEvent(_emit1StreamId, Guid.NewGuid(), _emit1EventType, _emit1Data, eventPosition, null), };
-                    return true;
-                case "emit22_type":
-                    _loadedState = newState = data;
+                    _loadedState = newState = data.Data;
                     emittedEvents = new[]
                         {
-                            new EmittedEvent(_emit2StreamId, Guid.NewGuid(), _emit2EventType, _emit1Data, eventPosition, null),
-                            new EmittedEvent(_emit2StreamId, Guid.NewGuid(), _emit2EventType, _emit2Data, eventPosition, null),
+                            new EmittedDataEvent(
+                                _emit1StreamId, Guid.NewGuid(), _emit1EventType, _emit1Data, null, eventPosition, null),
+                        };
+                    return true;
+                case "emit22_type":
+                    _loadedState = newState = data.Data;
+                    emittedEvents = new[]
+                        {
+                            new EmittedDataEvent(
+                                _emit2StreamId, Guid.NewGuid(), _emit2EventType, _emit1Data, null, eventPosition, null),
+                            new EmittedDataEvent(
+                                _emit2StreamId, Guid.NewGuid(), _emit2EventType, _emit2Data, null, eventPosition, null),
                         };
                     return true;
                 case "emit212_type":
-                    _loadedState = newState = data;
+                    _loadedState = newState = data.Data;
                     emittedEvents = new[]
                         {
-                            new EmittedEvent(_emit2StreamId, Guid.NewGuid(), _emit2EventType, _emit1Data, eventPosition, null),
-                            new EmittedEvent(_emit1StreamId, Guid.NewGuid(), _emit1EventType, _emit2Data, eventPosition, null),
-                            new EmittedEvent(_emit2StreamId, Guid.NewGuid(), _emit2EventType, _emit3Data, eventPosition, null),
+                            new EmittedDataEvent(
+                                _emit2StreamId, Guid.NewGuid(), _emit2EventType, _emit1Data, null, eventPosition, null),
+                            new EmittedDataEvent(
+                                _emit1StreamId, Guid.NewGuid(), _emit1EventType, _emit2Data, null, eventPosition, null),
+                            new EmittedDataEvent(
+                                _emit2StreamId, Guid.NewGuid(), _emit2EventType, _emit3Data, null, eventPosition, null),
                         };
                     return true;
                 case "emit12_type":
-                    _loadedState = newState = data;
+                    _loadedState = newState = data.Data;
                     emittedEvents = new[]
                         {
-                            new EmittedEvent(_emit1StreamId, Guid.NewGuid(), _emit1EventType, _emit1Data, eventPosition, null),
-                            new EmittedEvent(_emit2StreamId, Guid.NewGuid(), _emit2EventType, _emit2Data, eventPosition, null),
+                            new EmittedDataEvent(
+                                _emit1StreamId, Guid.NewGuid(), _emit1EventType, _emit1Data, null, eventPosition, null),
+                            new EmittedDataEvent(
+                                _emit2StreamId, Guid.NewGuid(), _emit2EventType, _emit2Data, null, eventPosition, null),
+                        };
+                    return true;
+                case "just_emit":
+                    newState = _loadedState;
+                    emittedEvents = new[]
+                        {
+                            new EmittedDataEvent(
+                                _emit1StreamId, Guid.NewGuid(), _emit1EventType, _emit1Data, null, eventPosition, null),
                         };
                     return true;
                 default:
                     throw new NotSupportedException();
             }
+        }
+
+        public string TransformStateToResult()
+        {
+            return _loadedState;
         }
 
         public void Dispose()

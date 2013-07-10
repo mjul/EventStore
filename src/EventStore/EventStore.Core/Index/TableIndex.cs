@@ -29,16 +29,19 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Text;
 using System.Threading;
 using EventStore.Common.Log;
 using EventStore.Common.Utils;
 using EventStore.Core.Exceptions;
+using EventStore.Core.Util;
 
 namespace EventStore.Core.Index
 {
     public class TableIndex : ITableIndex
     {
         public const string IndexMapFilename = "indexmap";
+        public const string IndexMapBackupFilename = "indexmap.backup";
         private const int MaxMemoryTables = 1;
 
         private static readonly ILogger Log = LogManager.GetLoggerFor<TableIndex>();
@@ -86,47 +89,115 @@ namespace EventStore.Core.Index
             _awaitingMemTables = new List<TableItem> { new TableItem(_memTableFactory(), -1, -1) };
         }
 
-        public void Initialize()
+        public void Initialize(long writerCheckpoint)
         {
-            //NOT THREAD SAFE (assumes one thread)
+            Ensure.Nonnegative(writerCheckpoint, "writerCheckpoint");
 
+            //NOT THREAD SAFE (assumes one thread)
             if (_initialized)
-                throw new IOException("TableIndex is already initialized.");
-            
+                throw new IOException("TableIndex is already initialized.");           
             _initialized = true;
             
             CreateIfDoesNotExist(_directory);
+            var indexmapFile = Path.Combine(_directory, IndexMapFilename);
+            var backupFile = Path.Combine(_directory, IndexMapBackupFilename);
 
+            // if TableIndex's CommitCheckpoint is >= amount of written TFChunk data, 
+            // we'll have to remove some of PTables as they point to non-existent data
+            // this can happen (very unlikely, though) on master crash
             try
             {
-                _indexMap = IndexMap.FromFile(Path.Combine(_directory, IndexMapFilename), IsHashCollision, _maxTablesPerLevel);
-                if (_indexMap.IsCorrupt(_directory))
-                {
-                    foreach (var ptable in _indexMap.InOrder())
-                    {
-                        ptable.MarkForDestruction();
-                    }
-                    foreach (var ptable in _indexMap.InOrder())
-                    {
-                        ptable.WaitForDestroy(5000);
-                    }
+                if (IsCorrupt(_directory))
                     throw new CorruptIndexException("IndexMap is in unsafe state.");
+                _indexMap = IndexMap.FromFile(indexmapFile, IsHashCollision, _maxTablesPerLevel);
+                if (_indexMap.CommitCheckpoint >= writerCheckpoint)
+                {
+                    _indexMap.Dispose(TimeSpan.FromMilliseconds(5000));
+                    throw new CorruptIndexException("IndexMap's CommitCheckpoint is greater than WriterCheckpoint.");
                 }
             }
             catch (CorruptIndexException exc)
             {
-                Log.ErrorException(exc, "ReadIndex was corrupted. Rebuilding from scratch...");
-                foreach (var filePath in Directory.EnumerateFiles(_directory))
-                {
-                    File.Delete(filePath);
-                }
-                _indexMap = IndexMap.FromFile(Path.Combine(_directory, IndexMapFilename),
-                                              IsHashCollision,
-                                              _maxTablesPerLevel);
-            } 
+                Log.ErrorException(exc, "ReadIndex is corrupted...");
+                LogIndexMapContent(indexmapFile);
+                DumpAndCopyIndex();
+                File.Delete(indexmapFile);
 
+                bool createEmptyIndexMap = true;
+                if (File.Exists(backupFile))
+                {
+                    File.Copy(backupFile, indexmapFile);
+                    try
+                    {
+                        _indexMap = IndexMap.FromFile(indexmapFile, IsHashCollision, _maxTablesPerLevel);
+                        if (_indexMap.CommitCheckpoint >= writerCheckpoint)
+                        {
+                            _indexMap.Dispose(TimeSpan.FromMilliseconds(5000));
+                            throw new CorruptIndexException("Back-up IndexMap's CommitCheckpoint is still greater than WriterCheckpoint.");
+                        }
+                        createEmptyIndexMap = false;
+                        Log.Info("Using back-up index map...");
+                    }
+                    catch (CorruptIndexException ex)
+                    {
+                        Log.ErrorException(ex, "Backup IndexMap is also corrupted...");
+                        LogIndexMapContent(backupFile);
+                        File.Delete(indexmapFile);
+                        File.Delete(backupFile);
+                    }
+                }
+
+                if (createEmptyIndexMap)
+                    _indexMap = IndexMap.FromFile(indexmapFile, IsHashCollision, _maxTablesPerLevel);
+                if (IsCorrupt(_directory))
+                    LeaveUnsafeState(_directory);
+            }
             _prepareCheckpoint = _indexMap.PrepareCheckpoint;
             _commitCheckpoint = _indexMap.CommitCheckpoint;
+
+            // clean up all other remaining files
+            var indexFiles = _indexMap.InOrder().Select(x => Path.GetFileName(x.Filename))
+                                                .Union(new[] { IndexMapFilename, IndexMapBackupFilename });
+            var toDeleteFiles = Directory.EnumerateFiles(_directory).Select(Path.GetFileName)
+                                         .Except(indexFiles, StringComparer.OrdinalIgnoreCase);
+            foreach (var filePath in toDeleteFiles)
+            {
+                var file = Path.Combine(_directory, filePath);
+                File.SetAttributes(file, FileAttributes.Normal);
+                File.Delete(file);
+            }
+        }
+
+        private static void LogIndexMapContent(string indexmapFile)
+        {
+            try
+            {
+                var sb = new StringBuilder();
+                sb.AppendFormat("IndexMap '{0}' content:\n", indexmapFile);
+                sb.AppendLine(Helper.FormatBinaryDump(File.ReadAllBytes(indexmapFile)));
+
+                Log.Error(sb.ToString());
+            }
+            catch (Exception exc)
+            {
+                Log.ErrorException(exc, "Unexpected error while dumping IndexMap '{0}'.", indexmapFile);
+            }
+        }
+
+        private void DumpAndCopyIndex()
+        {
+            string dumpPath = null;
+            try
+            {
+                dumpPath = Path.Combine(Path.GetDirectoryName(_directory),
+                                        string.Format("index-backup-{0:yyyy-MM-dd_HH-mm-ss.fff}", DateTime.UtcNow));
+                Log.Error("Making backup of index folder for inspection to {0}...", dumpPath);
+                FileUtils.DirectoryCopy(_directory, dumpPath, copySubDirs: true);
+            }
+            catch (Exception exc)
+            {
+                Log.ErrorException(exc, "Unexpected error while copying index to backup dir '{0}'", dumpPath);
+            }
         }
 
         private bool IsHashCollision(IndexEntry entry)
@@ -224,20 +295,28 @@ namespace EventStore.Core.Index
                     else
                         ptable = (PTable) tableItem.Table;
 
-                    _indexMap.EnterUnsafeState(_directory);
+                    // backup current version of IndexMap in case following switch will be left in unsafe state
+                    // this will allow to rebuild just part of index
+                    var backupFile = Path.Combine(_directory, IndexMapBackupFilename);
+                    var indexmapFile = Path.Combine(_directory, IndexMapFilename);
+                    Helper.EatException(() =>
+                    {
+                        if (File.Exists(backupFile))
+                            File.Delete(backupFile);
+                        if (File.Exists(indexmapFile))
+                            File.Copy(indexmapFile, backupFile);
+                    });
 
-                    var mergeResult = _indexMap.AddFile(ptable,
-                                                        tableItem.PrepareCheckpoint,
-                                                        tableItem.CommitCheckpoint,
-                                                        _fileNameProvider);
+                    EnterUnsafeState(_directory);
+
+                    var mergeResult = _indexMap.AddFile(ptable, tableItem.PrepareCheckpoint, tableItem.CommitCheckpoint, _fileNameProvider);
                     _indexMap = mergeResult.MergedMap;
-                    _indexMap.SaveToFile(Path.Combine(_directory, IndexMapFilename));
+                    _indexMap.SaveToFile(indexmapFile);
 
-                    _indexMap.LeaveUnsafeState(_directory);
-                    
+                    LeaveUnsafeState(_directory);
+
                     lock (_awaitingTablesLock)
                     {
-                        //oh well at least its only a small lock that is very unlikely to ever be hit
                         var memTables = _awaitingMemTables.ToList();
 
                         var corrTable = memTables.First(x => x.Table.Id == ptable.Id);
@@ -253,6 +332,9 @@ namespace EventStore.Core.Index
                         _awaitingMemTables = memTables;
                     }
 
+                    // We'll keep indexmap.backup in case of crash. In case of crash we hope that all necessary 
+                    // PTables for previous version of IndexMap are still there, so we can rebuild
+                    // from last step, not to do full rebuild.
                     mergeResult.ToDelete.ForEach(x => x.MarkForDestruction());
                 }
             }
@@ -467,14 +549,36 @@ namespace EventStore.Core.Index
                 if (removeFiles)
                 {
                     _indexMap.InOrder().ToList().ForEach(x => x.MarkForDestruction());
-                    _indexMap.InOrder().ToList().ForEach(x => x.WaitForDestroy(1000));
+                    _indexMap.InOrder().ToList().ForEach(x => x.WaitForDisposal(TimeSpan.FromMilliseconds(5000)));
                     File.Delete(Path.Combine(_directory, IndexMapFilename));
                 }
                 else
                 {
                     _indexMap.InOrder().ToList().ForEach(x => x.Dispose());
+                    _indexMap.InOrder().ToList().ForEach(x => x.WaitForDisposal(TimeSpan.FromMilliseconds(5000)));
                 }
             }
+        }
+
+        public static bool IsCorrupt(string directory)
+        {
+            return File.Exists(Path.Combine(directory, "merging.m"));
+        }
+
+        public static void EnterUnsafeState(string directory)
+        {
+            if (!IsCorrupt(directory))
+            {
+                using (var f = File.Create(Path.Combine(directory, "merging.m")))
+                {
+                    f.Flush(flushToDisk: true);
+                }
+            }
+        }
+
+        public static void LeaveUnsafeState(string directory)
+        {
+            File.Delete(Path.Combine(directory, "merging.m"));
         }
 
         private class TableItem

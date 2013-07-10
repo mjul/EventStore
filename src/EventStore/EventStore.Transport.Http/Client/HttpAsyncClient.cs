@@ -26,9 +26,9 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 // 
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Net;
-using System.Text;
 using EventStore.Common.Utils;
 
 namespace EventStore.Transport.Http.Client
@@ -47,10 +47,24 @@ namespace EventStore.Transport.Http.Client
             Ensure.NotNull(onSuccess, "onSuccess");
             Ensure.NotNull(onException, "onException");
 
-            Receive(HttpMethod.Get, url, onSuccess, onException);
+            Receive(HttpMethod.Get, url, null, onSuccess, onException);
         }
 
+        public void Get(string url, IEnumerable<KeyValuePair<string,string>> headers, Action<HttpResponse> onSuccess, Action<Exception> onException)
+        {
+            Ensure.NotNull(url, "url");
+            Ensure.NotNull(onSuccess, "onSuccess");
+            Ensure.NotNull(onException, "onException");
+
+            Receive(HttpMethod.Get, url, headers, onSuccess, onException);
+        }
         public void Post(string url, string body, string contentType, Action<HttpResponse> onSuccess, Action<Exception> onException)
+        {
+            Post(url, body, contentType, null, onSuccess, onException);
+        }
+
+        public void Post(string url, string body, string contentType, IEnumerable<KeyValuePair<string,string>> headers, 
+                         Action<HttpResponse> onSuccess, Action<Exception> onException)
         {
             Ensure.NotNull(url, "url");
             Ensure.NotNull(body, "body");
@@ -58,7 +72,7 @@ namespace EventStore.Transport.Http.Client
             Ensure.NotNull(onSuccess, "onSuccess");
             Ensure.NotNull(onException, "onException");
 
-            Send(HttpMethod.Post, url, body, contentType, onSuccess, onException);
+            Send(HttpMethod.Post, url, body, contentType, headers, onSuccess, onException);
         }
 
         public void Delete(string url, Action<HttpResponse> onSuccess, Action<Exception> onException)
@@ -67,7 +81,7 @@ namespace EventStore.Transport.Http.Client
             Ensure.NotNull(onSuccess, "onSuccess");
             Ensure.NotNull(onException, "onException");
 
-            Receive(HttpMethod.Delete, url, onSuccess, onException);
+            Receive(HttpMethod.Delete, url, null, onSuccess, onException);
         }
 
         public void Put(string url, string body, string contentType, Action<HttpResponse> onSuccess, Action<Exception> onException)
@@ -78,10 +92,11 @@ namespace EventStore.Transport.Http.Client
             Ensure.NotNull(onSuccess, "onSuccess");
             Ensure.NotNull(onException, "onException");
 
-            Send(HttpMethod.Put, url, body, contentType, onSuccess, onException);
+            Send(HttpMethod.Put, url, body, contentType, null, onSuccess, onException);
         }
 
-        private void Receive(string method, string url, Action<HttpResponse> onSuccess, Action<Exception> onException)
+        private void Receive(string method, string url, IEnumerable<KeyValuePair<string, string>> headers,
+                             Action<HttpResponse> onSuccess, Action<Exception> onException)
         {
             var request = (HttpWebRequest)WebRequest.Create(url);
 
@@ -93,20 +108,37 @@ namespace EventStore.Transport.Http.Client
             request.KeepAlive = true;
             request.Pipelined = true;
 #endif
+            if (headers != null)
+            {
+                foreach (var header in headers)
+                {
+                    request.Headers.Add(header.Key, header.Value);
+                }
+            }
 
             request.BeginGetResponse(ResponseAcquired, new ClientOperationState(request, onSuccess, onException));
         }
 
-        private void Send(string method, string url, string body, string contentType, Action<HttpResponse> onSuccess, Action<Exception> onException)
+        private void Send(string method, string url, string body, string contentType, 
+                          IEnumerable<KeyValuePair<string, string>> headers, 
+                          Action<HttpResponse> onSuccess, Action<Exception> onException)
         {
             var request = (HttpWebRequest)WebRequest.Create(url);
-            var bodyBytes = Encoding.UTF8.GetBytes(body);
+            var bodyBytes = Helper.UTF8NoBom.GetBytes(body);
 
             request.Method = method;
             request.KeepAlive = true;
             request.Pipelined = true;
             request.ContentLength = bodyBytes.Length;
             request.ContentType = contentType;
+
+            if (headers != null)
+            {
+                foreach (var header in headers)
+                {
+                    request.Headers.Add(header.Key, header.Value);
+                }
+            }
 
             var state = new ClientOperationState(request, onSuccess, onException)
             {
@@ -130,8 +162,7 @@ namespace EventStore.Transport.Http.Client
                 state.InputStream = networkStream;
                 state.OutputStream = new MemoryStream();
 
-                var copier = new AsyncStreamCopier<ClientOperationState>(state.InputStream, state.OutputStream, state);
-                copier.Completed += ResponseRead;
+                var copier = new AsyncStreamCopier<ClientOperationState>(state.InputStream, state.OutputStream, state, ResponseRead);
                 copier.Start();
             }
             catch (Exception e)
@@ -141,9 +172,8 @@ namespace EventStore.Transport.Http.Client
             }
         }
 
-        private void ResponseRead(object sender, EventArgs eventArgs)
+        private void ResponseRead(AsyncStreamCopier<ClientOperationState> copier)
         {
-            var copier = (AsyncStreamCopier<ClientOperationState>)sender;
             var state = copier.AsyncState;
 
             if (copier.Error != null)
@@ -155,7 +185,7 @@ namespace EventStore.Transport.Http.Client
 
             state.OutputStream.Seek(0, SeekOrigin.Begin);
             var memStream = (MemoryStream)state.OutputStream;
-            state.Response.Body = Encoding.UTF8.GetString(memStream.GetBuffer(), 0, (int) memStream.Length);
+            state.Response.Body = Helper.UTF8NoBom.GetString(memStream.GetBuffer(), 0, (int) memStream.Length);
 
             state.DisposeIOStreams();
             state.OnSuccess(state.Response);
@@ -168,8 +198,7 @@ namespace EventStore.Transport.Http.Client
             {
                 var networkStream = state.Request.EndGetRequestStream(ar);
                 state.OutputStream = networkStream;
-                var copier = new AsyncStreamCopier<ClientOperationState>(state.InputStream, networkStream, state);
-                copier.Completed += RequestWrote;
+                var copier = new AsyncStreamCopier<ClientOperationState>(state.InputStream, networkStream, state, RequestWrote);
                 copier.Start();
             }
             catch (Exception e)
@@ -179,9 +208,8 @@ namespace EventStore.Transport.Http.Client
             }
         }
 
-        private void RequestWrote(object sender, EventArgs eventArgs)
+        private void RequestWrote(AsyncStreamCopier<ClientOperationState> copier)
         {
-            var copier = (AsyncStreamCopier<ClientOperationState>)sender;
             var state = copier.AsyncState;
             var httpRequest = state.Request;
 

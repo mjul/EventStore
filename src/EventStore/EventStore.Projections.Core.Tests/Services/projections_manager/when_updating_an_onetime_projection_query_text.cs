@@ -26,6 +26,8 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 // 
 
+using System;
+using System.Collections.Generic;
 using System.Linq;
 using EventStore.Core.Messages;
 using EventStore.Core.Messaging;
@@ -45,7 +47,9 @@ namespace EventStore.Projections.Core.Tests.Services.projections_manager
         [Test, Category("v8")]
         public void the_projection_source_can_be_retrieved()
         {
-            _manager.Handle(new ProjectionManagementMessage.GetQuery(new PublishEnvelope(_bus), _projectionName));
+            _manager.Handle(
+                new ProjectionManagementMessage.GetQuery(
+                    new PublishEnvelope(_bus), _projectionName, ProjectionManagementMessage.RunAs.Anonymous));
             Assert.AreEqual(1, _consumer.HandledMessages.OfType<ProjectionManagementMessage.ProjectionQuery>().Count());
             var projectionQuery =
                 _consumer.HandledMessages.OfType<ProjectionManagementMessage.ProjectionQuery>().Single();
@@ -77,6 +81,7 @@ namespace EventStore.Projections.Core.Tests.Services.projections_manager
         public void the_projection_state_can_be_retrieved()
         {
             _manager.Handle(new ProjectionManagementMessage.GetState(new PublishEnvelope(_bus), _projectionName, ""));
+            _queue.Process();
 
             Assert.AreEqual(1, _consumer.HandledMessages.OfType<ProjectionManagementMessage.ProjectionState>().Count());
             Assert.AreEqual(
@@ -86,20 +91,21 @@ namespace EventStore.Projections.Core.Tests.Services.projections_manager
                 "", _consumer.HandledMessages.OfType<ProjectionManagementMessage.ProjectionState>().Single().State);
         }
 
-        protected override void When()
+        protected override IEnumerable<WhenStep> When()
         {
             _projectionName = "test-projection";
-            _bus.Publish(new SystemMessage.BecomeWorking());
-            _manager.Handle(
-                new ProjectionManagementMessage.Post(
-                    new PublishEnvelope(_bus), ProjectionMode.Transient, _projectionName, "JS",
-                    @"fromAll(); on_any(function(){});log(1);", enabled: true, checkpointsEnabled: false,
-                    emitEnabled: false));
+            yield return (new SystemMessage.BecomeMaster(Guid.NewGuid()));
+            yield return
+                (new ProjectionManagementMessage.Post(
+                    new PublishEnvelope(_bus), ProjectionMode.Transient, _projectionName,
+                    ProjectionManagementMessage.RunAs.Anonymous, "JS", @"fromAll(); on_any(function(){});log(1);",
+                    enabled: true, checkpointsEnabled: false, emitEnabled: false));
             // when
             _newProjectionSource = @"fromAll(); on_any(function(){});log(2);";
-            _manager.Handle(
-                new ProjectionManagementMessage.UpdateQuery(
-                    new PublishEnvelope(_bus), _projectionName, "JS", _newProjectionSource, emitEnabled: null));
+            yield return
+                (new ProjectionManagementMessage.UpdateQuery(
+                    new PublishEnvelope(_bus), _projectionName, ProjectionManagementMessage.RunAs.Anonymous, "JS",
+                    _newProjectionSource, emitEnabled: null));
         }
     }
 }

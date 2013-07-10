@@ -29,6 +29,7 @@ using System;
 using System.IO;
 using System.Reflection;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography.X509Certificates;
 using System.Threading;
 using EventStore.Common.Exceptions;
 using EventStore.Common.Log;
@@ -66,40 +67,38 @@ namespace EventStore.Core
                 {
                     Console.WriteLine("Options:");
                     Console.WriteLine(options.GetUsage());
-                    return 0;
                 }
-
-                if (options.ShowVersion)
+                else if (options.ShowVersion)
                 {
                     Console.WriteLine("EventStore version {0} ({1}/{2}, {3})",
-                                      VersionInfo.Version,
-                                      VersionInfo.Branch,
-                                      VersionInfo.Hashtag,
-                                      VersionInfo.Timestamp);
-                    return 0;
+                                      VersionInfo.Version, VersionInfo.Branch, VersionInfo.Hashtag, VersionInfo.Timestamp);
+                    Application.ExitSilent(0, "Normal exit.");
                 }
+                else
+                {
+                    Init(options);
+                    Create(options);
+                    Start();
 
-                Init(options);
-                Create(options);
-                Start();
-
-                _exitEvent.Wait();
+                    _exitEvent.Wait();
+                }
             }
             catch (OptionException exc)
             {
                 Console.Error.WriteLine("Error while parsing options:");
                 Console.Error.WriteLine(FormatExceptionMessage(exc));
                 Console.Error.WriteLine();
-                Console.Error.WriteLine("Usage:");
+                Console.Error.WriteLine("Options:");
                 Console.Error.WriteLine(options.GetUsage());
             }
             catch (ApplicationInitializationException ex)
             {
+                Log.FatalException(ex, "Application initialization error: {0}.", FormatExceptionMessage(ex));
                 Application.Exit(ExitCode.Error, FormatExceptionMessage(ex));
             }
             catch (Exception ex)
             {
-                Log.ErrorException(ex, "Unhandled exception while starting application:\n{0}", FormatExceptionMessage(ex));
+                Log.FatalException(ex, "Unhandled exception while starting application:\n{0}", FormatExceptionMessage(ex));
                 Application.Exit(ExitCode.Error, FormatExceptionMessage(ex));
             }
             finally
@@ -107,6 +106,7 @@ namespace EventStore.Core
                 Log.Flush();
             }
 
+            Application.ExitSilent(_exitCode, "Normal exit.");
             return _exitCode;
         }
 
@@ -114,6 +114,10 @@ namespace EventStore.Core
         {
             _exitCode = exitCode;
             _exitEvent.Set();
+        }
+
+        protected virtual void OnProgramExit()
+        {
         }
 
         private void Init(TOptions options)
@@ -128,11 +132,13 @@ namespace EventStore.Core
             string logsDirectory = Path.GetFullPath(options.LogsDir.IsNotEmptyString() ? options.LogsDir : GetLogsDirectory(options));
             LogManager.Init(componentName, logsDirectory);
 
-            Log.Info("\n{0,-25} {1} ({2})\n"
-                     + "{3,-25} {4} ({5}-bit)\n"
-                     + "{6,-25} {7}\n"
-                     + "{8,-25} {9}\n\n"
-                     + "{10}",
+            Log.Info("\n{0,-25} {1} ({2}/{3}, {4})\n"
+                     + "{5,-25} {6} ({7})\n"
+                     + "{8,-25} {9} ({10}-bit)\n"
+                     + "{11,-25} {12}\n"
+                     + "{13,-25} {14}\n\n"
+                     + "{15}",
+                     "ES VERSION:", VersionInfo.Version, VersionInfo.Branch, VersionInfo.Hashtag, VersionInfo.Timestamp,
                      "OS:", OS.IsLinux ? "Linux" : "Windows", Environment.OSVersion,
                      "RUNTIME:", OS.GetRuntimeVersion(), Marshal.SizeOf(typeof(IntPtr)) * 8,
                      "GC:", GC.MaxGeneration == 0 ? "NON-GENERATION (PROBABLY BOEHM)" : string.Format("{0} GENERATIONS", GC.MaxGeneration + 1),
@@ -154,34 +160,71 @@ namespace EventStore.Core
             return msg;
         }
 
-        protected static TFChunkDbConfig CreateDbConfig(string dbPath, int chunksToCache)
+        protected static TFChunkDbConfig CreateDbConfig(string dbPath, int cachedChunks, long chunksCacheSize)
         {
             if (!Directory.Exists(dbPath)) // mono crashes without this check
                 Directory.CreateDirectory(dbPath);
 
             ICheckpoint writerChk;
             ICheckpoint chaserChk;
+            ICheckpoint epochChk;
+            ICheckpoint truncateChk;
 
             var writerCheckFilename = Path.Combine(dbPath, Checkpoint.Writer + ".chk");
             var chaserCheckFilename = Path.Combine(dbPath, Checkpoint.Chaser + ".chk");
+            var epochCheckFilename = Path.Combine(dbPath, Checkpoint.Epoch + ".chk");
+            var truncateCheckFilename = Path.Combine(dbPath, Checkpoint.Truncate + ".chk");
             if (Runtime.IsMono)
             {
                 writerChk = new FileCheckpoint(writerCheckFilename, Checkpoint.Writer, cached: true);
                 chaserChk = new FileCheckpoint(chaserCheckFilename, Checkpoint.Chaser, cached: true);
+                epochChk = new FileCheckpoint(epochCheckFilename, Checkpoint.Epoch, cached: true, initValue: -1);
+                truncateChk = new FileCheckpoint(truncateCheckFilename, Checkpoint.Truncate, cached: true, initValue: -1);
             }
             else
             {
                 writerChk = new MemoryMappedFileCheckpoint(writerCheckFilename, Checkpoint.Writer, cached: true);
                 chaserChk = new MemoryMappedFileCheckpoint(chaserCheckFilename, Checkpoint.Chaser, cached: true);
+                epochChk = new MemoryMappedFileCheckpoint(epochCheckFilename, Checkpoint.Epoch, cached: true, initValue: -1);
+                truncateChk = new MemoryMappedFileCheckpoint(truncateCheckFilename, Checkpoint.Truncate, cached: true, initValue: -1);
             }
+
+            var cache = cachedChunks >= 0
+                                ? cachedChunks*(long)(TFConsts.ChunkSize + ChunkHeader.Size + ChunkFooter.Size)
+                                : chunksCacheSize;
             var nodeConfig = new TFChunkDbConfig(dbPath,
                                                  new VersionedPatternFileNamingStrategy(dbPath, "chunk-"),
                                                  TFConsts.ChunkSize,
-                                                 chunksToCache,
+                                                 cache,
                                                  writerChk,
                                                  chaserChk,
-                                                 new[] {writerChk, chaserChk});
+                                                 epochChk,
+                                                 truncateChk);
             return nodeConfig;
+        }
+
+        protected static X509Certificate2 LoadCertificateFromFile(string path, string password)
+        {
+            return new X509Certificate2(path, password);
+        }
+
+        protected static X509Certificate2 LoadCertificateFromStore(string storeName, string certName)
+        {
+            var store = new X509Store(storeName);
+            try
+            {
+                store.Open(OpenFlags.OpenExistingOnly);
+            }
+            catch (Exception exc)
+            {
+                throw new Exception(string.Format("Couldn't open certificates store '{0}'.", storeName), exc);
+            }
+            foreach (var cert in store.Certificates)
+            {
+                if (cert.Subject == certName)
+                    return cert;
+            }
+            throw new ArgumentException(string.Format("Certificate '{0}' not found in storage '{1}'.", certName, storeName));
         }
     }
 }

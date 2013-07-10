@@ -29,7 +29,7 @@
 using System;
 using System.Linq;
 using EventStore.Core.Messages;
-using EventStore.Core.Tests.Helper;
+using EventStore.Core.Tests.Helpers;
 using EventStore.Projections.Core.Messages;
 using EventStore.Projections.Core.Services.Processing;
 using NUnit.Framework;
@@ -45,19 +45,27 @@ namespace EventStore.Projections.Core.Tests.Services.core_projection.emitted_str
         protected override void Given()
         {
             base.Given();
-            NoStream("test");
+            AllWritesSucceed();
+            NoOtherStreams();
         }
 
         [SetUp]
         public void Setup()
         {
             _readyHandler = new TestCheckpointManagerMessageHandler();
-            _stream = new EmittedStream("test", CheckpointTag.FromPosition(0, -1), _bus, _readyHandler, 50);
+            _stream = new EmittedStream(
+                "test", new ProjectionVersion(1, 0, 0), null, new TransactionFilePositionTagger(),
+                CheckpointTag.FromPosition(0, -1), CheckpointTag.FromPosition(0, -1), _readDispatcher, _writeDispatcher,
+                _readyHandler, 50);
             _stream.Start();
             _stream.EmitEvents(
-                new[] { new EmittedEvent("test", Guid.NewGuid(), "type", "data", CheckpointTag.FromPosition(10, 5), null) });
+                new[]
+                    {
+                        new EmittedDataEvent(
+                    "test", Guid.NewGuid(), "type", "data", null, CheckpointTag.FromPosition(10, 5), null)
+                    });
             var msg = _consumer.HandledMessages.OfType<ClientMessage.WriteEvents>().First();
-            _stream.Handle(new ClientMessage.WriteEventsCompleted(msg.CorrelationId, 0));
+            _bus.Publish(new ClientMessage.WriteEventsCompleted(msg.CorrelationId, 0));
             _stream.Checkpoint();
         }
 

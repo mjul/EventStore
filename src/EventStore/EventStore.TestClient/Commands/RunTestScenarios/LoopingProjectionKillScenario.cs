@@ -42,8 +42,8 @@ namespace EventStore.TestClient.Commands.RunTestScenarios
         private readonly TimeSpan _iterationLoopDuration;
         private readonly TimeSpan _firstKillInterval;
 
-        public LoopingProjectionKillScenario(Action<IPEndPoint, byte[]> directSendOverTcp, int maxConcurrentRequests, int connections, int streams, int eventsPerStream, int streamDeleteStep, TimeSpan executionPeriod, string dbParentPath) 
-            : base(directSendOverTcp, maxConcurrentRequests, connections, streams, eventsPerStream, streamDeleteStep, dbParentPath)
+        public LoopingProjectionKillScenario(Action<IPEndPoint, byte[]> directSendOverTcp, int maxConcurrentRequests, int connections, int streams, int eventsPerStream, int streamDeleteStep, TimeSpan executionPeriod, string dbParentPath, NodeConnectionInfo customNode)
+            : base(directSendOverTcp, maxConcurrentRequests, connections, streams, eventsPerStream, streamDeleteStep, dbParentPath, customNode)
         {
             _executionPeriod = executionPeriod;
 
@@ -104,34 +104,39 @@ namespace EventStore.TestClient.Commands.RunTestScenarios
             var writeTask = WriteData();
 
             var expectedAllEventsCount = (Streams * EventsPerStream).ToString();
-            var expectedEventsPerStream = EventsPerStream.ToString();
+            var lastExpectedEventVersion = (EventsPerStream - 1).ToString();
 
-            var successTask = Task.Factory.StartNew(() => 
+            var successTask = Task.Factory.StartNew(() =>
+            {
+                var success = false;
+                var stopWatch = new Stopwatch();
+                while (stopWatch.Elapsed < _iterationLoopDuration)
                 {
-                    var success = false;
-                    var stopWatch = new Stopwatch();
-                    while (stopWatch.Elapsed < _iterationLoopDuration)
+                    if (writeTask.IsFaulted)
+                        throw new ApplicationException("Failed to write data");
+
+                    if (writeTask.IsCompleted && !stopWatch.IsRunning)
                     {
-                        if (writeTask.IsFaulted)
-                            throw new ApplicationException("Failed to write data");
-
-                        if (writeTask.IsCompleted && !stopWatch.IsRunning)
-                        {
-                            stopWatch.Start();
-                        }
-
-                        success = CheckProjectionState(countItem, "count", x => x == expectedAllEventsCount)
-                               && CheckProjectionState(sumCheckForBankAccount0, "success", x => x == expectedEventsPerStream);
-
-                        if (success)
-                            break;
-
-                        Thread.Sleep(4000);
-
+                        stopWatch.Start();
                     }
-                    return success;
-                    
-                });
+
+                    success = CheckProjectionState(countItem, "count", x => x == expectedAllEventsCount)
+                              && CheckProjectionState(sumCheckForBankAccount0, "success", x => x == lastExpectedEventVersion);
+
+                    if (success)
+                        break;
+
+                    Thread.Sleep(4000);
+                }
+
+                if (! CheckProjectionState(countItem, "count", x => x == expectedAllEventsCount))
+                    Log.Error("Projection '{0}' has not completed with expected result {1} in time. ", countItem, expectedAllEventsCount);
+
+                if (!CheckProjectionState(sumCheckForBankAccount0, "success", x => x == lastExpectedEventVersion))
+                    Log.Error("Projection '{0}' has not completed with expected result {1} in time.", sumCheckForBankAccount0, lastExpectedEventVersion);
+
+                return success;
+            });
 
             writeTask.Wait();
 

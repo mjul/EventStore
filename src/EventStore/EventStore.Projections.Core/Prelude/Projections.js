@@ -6,26 +6,28 @@ var $projections = {
         var eventHandlers = { };
         var anyEventHandlers = [];
         var rawEventHandlers = [];
+        var transformers = [];
         var getStatePartitionHandler = function () {
             throw "GetStatePartition is not defined";
         };
 
         var sources = {
             /* TODO: comment out default falses to reduce message size */
-            all_streams: false, 
-            all_events: false,
-            by_streams: false,
-            by_custom_partitions: false,
+            allStreams: false, 
+            allEvents: false,
+            byStreams: false,
+            byCustomPartitions: false,
             categories: [], 
             streams: [], 
-            events: [], 
+            events: [],
+            definesStateTransform: false,
             options: { 
-                stateStreamName: null, 
-                $forceProjectionName: null, 
-                useEventIndexes: false,
+                resultStreamName: null, 
+                partitionResultStreamNamePattern: null, 
+                $forceProjectionName: null,
+                $includeLinks: false,
                 reorderEvents: false,
                 processingLag: 0,
-                emitStateUpdated: false,
             }, 
         };
 
@@ -37,35 +39,57 @@ var $projections = {
             set_debugging: function () {
                 debugging = true;
             },
-            initialize_raw: function() {
+
+            initialize: function() {
                 projectionState = initStateHandler();
                 return "OK";
             },
 
-            get_state_partition_raw: function (event, streamId, eventType, category, sequenceNumber, metadata, position) {
-                return getStatePartition(event, streamId, eventType, category, sequenceNumber, metadata, position);
+            get_state_partition: function (event, streamId, eventType, category, sequenceNumber, metadata) {
+                return getStatePartition(event, streamId, eventType, category, sequenceNumber, metadata);
             },
 
-            process_event_raw: function (event, streamId, eventType, category, sequenceNumber, metadata, partition, position) {
-                processEvent(event, streamId, eventType, category, sequenceNumber, metadata, partition, position);
+            process_event: function (event, isJson, streamId, eventType, category, sequenceNumber, metadata, partition) {
+                processEvent(event, isJson, streamId, eventType, category, sequenceNumber, metadata, partition);
+                var stateJson = JSON.stringify(projectionState);
+                return stateJson;
+            },
+
+            transform_state_to_result: function () {
+                var result = projectionState;
+                for (var i = 0; i < transformers.length; i++) {
+                    var by = transformers[i];
+                    result = by(result);
+                    if (result === null)
+                        break;
+                }
+                return result !== null ? JSON.stringify(result) : null;
+            },
+
+            set_state: function(jsonState) {
+                var parsedState = JSON.parse(jsonState);
+                projectionState = parsedState;
                 return "OK";
             },
 
-            get_state_raw: function() {
-                return projectionState;
+            debugging_get_state: function() {
+                return JSON.stringify(projectionState);
             },
 
-            set_state_raw: function(state) {
-                projectionState = state;
-                return "OK";
-            },
-
-            get_sources_raw: function() {
-                return sources;
+            get_sources: function() {
+                return JSON.stringify(sources);
             }
         };
 
-        function on_pure(eventName, eventHandler) {
+        function registerCommandHandlers($on) {
+            // this is the only way to pass parameters to the system module
+
+            for (var name in commandHandlers) {
+                $on(name, commandHandlers[name]);
+            }
+        }
+
+        function on_event(eventName, eventHandler) {
             eventHandlers[eventName] = eventHandler;
             sources.events.push(eventName);
         }
@@ -75,12 +99,12 @@ var $projections = {
         }
 
         function on_any(eventHandler) {
-            sources.all_events = true;
+            sources.allEvents = true;
             anyEventHandlers.push(eventHandler);
         }
 
         function on_raw(eventHandler) {
-            sources.all_events = true;
+            sources.allEvents = true;
             rawEventHandlers.push(eventHandler);
         }
 
@@ -94,7 +118,7 @@ var $projections = {
          };
 
          function tryDeserializeBody(eventEnvelope) {
-             var eventRaw = eventEnvelope.bodyRaw;
+            var eventRaw = eventEnvelope.bodyRaw;
             try {
                 if (eventRaw == '')
                     eventEnvelope.body = {};
@@ -102,25 +126,40 @@ var $projections = {
                     eventEnvelope.body = eventRaw;
                 else
                     eventEnvelope.body = JSON.parse(eventRaw);
+                eventEnvelope.data = eventEnvelope.body;
             } catch (ex) {
                 eventEnvelope.jsonError = ex;
                 eventEnvelope.body = undefined;
+                eventEnvelope.data = undefined;
             }
         }
 
-         function getStatePartition(eventRaw, streamId, eventType, category, sequenceNumber, metadataRaw, position) {
+         function envelope(body, bodyRaw, eventType, streamId, sequenceNumber, metadataRaw, partition) {
+            this.data = body;
+            this.body = body;
+            this.bodyRaw = bodyRaw;;
+            this.eventType = eventType;
+            this.streamId = streamId;
+            this.sequenceNumber = sequenceNumber;
+            this.metadataRaw = metadataRaw;
+            this.partition = partition;
+            this.metadata_ = null;
+        }
+
+        Object.defineProperty(envelope.prototype, "metadata", {
+            get: function () {
+                if (!this.metadata_ && this.metadataRaw) {
+                    this.metadata_ = JSON.parse(this.metadataRaw);
+                }
+                return this.metadata_;
+            }
+        });
+
+        function getStatePartition(eventRaw, streamId, eventType, category, sequenceNumber, metadataRaw) {
 
              var eventHandler = getStatePartitionHandler;
 
-             var eventEnvelope = {
-                 body: null,
-                 bodyRaw: eventRaw,
-                 eventType: eventType,
-                 streamId: streamId,
-                 sequenceNumber: sequenceNumber,
-                 metadataRaw: metadataRaw,
-                 position: position,
-             };
+             var eventEnvelope = new envelope(null, eventRaw, eventType, streamId, sequenceNumber, metadataRaw, null);
 
              tryDeserializeBody(eventEnvelope);
 
@@ -136,7 +175,7 @@ var $projections = {
 
         }
 
-         function processEvent(eventRaw, streamId, eventType, category, sequenceNumber, metadataRaw, partition, position) {
+         function processEvent(eventRaw, isJson, streamId, eventType, category, sequenceNumber, metadataRaw, partition) {
 
             var eventName = eventType;
 
@@ -145,17 +184,8 @@ var $projections = {
 
             var index;
 
-            var eventEnvelope = {
-                body: null,
-                bodyRaw: eventRaw,
-                eventType: eventType,
-                streamId: streamId,
-                sequenceNumber: sequenceNumber,
-                metadataRaw: metadataRaw,
-                partition: partition,
-                position: position,
-            };
-            // debug only
+            var eventEnvelope = new envelope(null, eventRaw, eventType, streamId, sequenceNumber, metadataRaw, partition);
+             // debug only
             for (index = 0; index < rawEventHandlers.length; index++) {
                 eventHandler = rawEventHandlers[index];
                 state = callHandler(eventHandler, state, eventEnvelope);
@@ -163,7 +193,7 @@ var $projections = {
 
             eventHandler = eventHandlers[eventName];
 
-            if (eventHandler !== undefined || anyEventHandlers.length > 0) 
+            if (isJson && (eventHandler !== undefined || anyEventHandlers.length > 0)) 
                 tryDeserializeBody(eventEnvelope);
 
             for (index = 0; index < anyEventHandlers.length; index++) {
@@ -187,20 +217,25 @@ var $projections = {
         }
 
         function byStream() {
-            sources.by_streams = true;
+            sources.byStreams = true;
         }
 
         function partitionBy(eventHandler) {
             getStatePartitionHandler = eventHandler;
-            sources.by_custom_partitions = true;
+            sources.byCustomPartitions = true;
         }
 
-        function emit_state_updated() {
-            sources.options.emitStateUpdated = true;
+        function $defines_state_transform() {
+            sources.definesStateTransform = true;
+        }
+
+        function chainTransformBy(by) {
+            transformers.push(by);
+            sources.definesStateTransform = true;
         }
 
         function fromAll() {
-            sources.all_streams = true;
+            sources.allStreams = true;
         }
 
         function emit(ev) {
@@ -216,7 +251,7 @@ var $projections = {
         }
 
         return {
-            on_pure: on_pure,
+            on_event: on_event,
             on_init_state: on_init_state,
             on_any: on_any,
             on_raw: on_raw,
@@ -227,12 +262,13 @@ var $projections = {
 
             byStream: byStream,
             partitionBy: partitionBy,
-            emit_state_updated: emit_state_updated,
+            $defines_state_transform: $defines_state_transform,
+            chainTransformBy: chainTransformBy,
 
             emit: emit,
             options: options,
 
-            commandHandlers: commandHandlers,
+            register_comand_handlers: registerCommandHandlers,
         };
     }
 };

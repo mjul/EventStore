@@ -26,6 +26,8 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 // 
 
+using System;
+using System.Collections.Generic;
 using System.Linq;
 using EventStore.Core.Messages;
 using EventStore.Core.Messaging;
@@ -49,13 +51,15 @@ namespace EventStore.Projections.Core.Tests.Services.projections_manager
 
         private string _projectionName;
 
-        protected override void When()
+        protected override IEnumerable<WhenStep> When()
         {
             _projectionName = "test-projection";
-            _manager.Handle(
+            yield return new SystemMessage.BecomeMaster(Guid.NewGuid());
+            yield return
                 new ProjectionManagementMessage.Post(
-                    new PublishEnvelope(_bus), ProjectionMode.Continuous, _projectionName, "JS",
-                    @"fromAll().whenAny(function(s,e){return s;});", enabled: true, checkpointsEnabled: true, emitEnabled: true));
+                    new PublishEnvelope(_bus), ProjectionMode.Continuous, _projectionName,
+                    ProjectionManagementMessage.RunAs.System, "JS", @"fromAll().whenAny(function(s,e){return s;});",
+                    enabled: true, checkpointsEnabled: true, emitEnabled: true);
         }
 
         [Test, Category("v8")]
@@ -74,7 +78,7 @@ namespace EventStore.Projections.Core.Tests.Services.projections_manager
         {
             Assert.IsTrue(
                 _consumer.HandledMessages.OfType<ClientMessage.WriteEvents>().Any(
-                    v => v.Events[0].EventType == "ProjectionUpdated"));
+                    v => v.Events[0].EventType == "$ProjectionUpdated"));
         }
 
         [Test, Category("v8")]

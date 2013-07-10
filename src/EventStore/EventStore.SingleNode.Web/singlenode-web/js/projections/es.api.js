@@ -12,12 +12,8 @@ es.postEvent = function (settings) {
     var onError = settings.error || function() {};
     var onSuccess = settings.success || function() {};
 
-
-
     var dataStr = null;
-    if (typeof data === "object") {
-        dataStr = JSON.stringify(data);
-    } else if (typeof data === "string") {
+    if (typeof data === "object" || typeof data === "string") {
         dataStr = data;
     } else {
         throw "couldn't parse data";
@@ -29,11 +25,7 @@ es.postEvent = function (settings) {
         "Data": dataStr,
         "Metadata": metadata
     };
-    var body = {
-        "CorrelationId": correlationId,
-        "ExpectedVersion": expectedVersion,
-        "Events": [event]
-    };
+    var body = [event];
     
     var bodyStr = JSON.stringify(body);
     var encodedStream = encodeURIComponent(stream);
@@ -42,9 +34,10 @@ es.postEvent = function (settings) {
         type: "post",
         data: bodyStr,
         headers: {
-            "Accept": "application/json"
+            "Accept": "application/json",
+            "ES-ExpectedVersion": expectedVersion
         },
-        contentType: "application/json", 
+        contentType: "application/vnd.eventstore.events+json",
         success: function () {
             onSuccess(eventId, correlationId);
         },

@@ -44,12 +44,14 @@ namespace EventStore.Core.Services.Transport.Tcp
         SubscribeReplica = 0x10,
         ReplicaLogPositionAck = 0x11,
         CreateChunk = 0x12,
-        PhysicalChunkBulk = 0x13,
-        LogicalChunkBulk = 0x14,
+        RawChunkBulk = 0x13,
+        DataChunkBulk = 0x14,
+        ReplicaSubscriptionRetry = 0x15,
+        ReplicaSubscribed = 0x16,
 
         // CLIENT COMMANDS
-        CreateStream = 0x80,
-        CreateStreamCompleted = 0x81,
+//        CreateStream = 0x80,
+//        CreateStreamCompleted = 0x81,
 
         WriteEvents = 0x82,
         WriteEventsCompleted = 0x83,
@@ -84,6 +86,9 @@ namespace EventStore.Core.Services.Transport.Tcp
         ScavengeDatabase = 0xD0,
 
         BadRequest = 0xF0,
-        DeniedToRoute = 0xF1
+        NotHandled = 0xF1,
+        Authenticate = 0xF2,
+        Authenticated = 0xF3,
+        NotAuthenticated = 0xF4
     }
 }

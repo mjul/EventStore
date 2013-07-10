@@ -28,7 +28,7 @@
 using System;
 using System.Net;
 using EventStore.Common.Utils;
-using EventStore.Core.Cluster;
+using EventStore.Core.Data;
 using EventStore.Core.Messaging;
 
 namespace EventStore.Core.Messages
@@ -37,53 +37,159 @@ namespace EventStore.Core.Messages
     {
         public class SystemInit : Message
         {
+            private static readonly int TypeId = System.Threading.Interlocked.Increment(ref NextMsgId);
+            public override int MsgTypeId { get { return TypeId; } }
         }
 
         public class SystemStart : Message
         {
+            private static readonly int TypeId = System.Threading.Interlocked.Increment(ref NextMsgId);
+            public override int MsgTypeId { get { return TypeId; } }
         }
 
         public class StorageReaderInitializationDone: Message
         {
+            private static readonly int TypeId = System.Threading.Interlocked.Increment(ref NextMsgId);
+            public override int MsgTypeId { get { return TypeId; } }
         }
 
         public class StorageWriterInitializationDone : Message
         {
+            private static readonly int TypeId = System.Threading.Interlocked.Increment(ref NextMsgId);
+            public override int MsgTypeId { get { return TypeId; } }
         }
 
         public abstract class StateChangeMessage: Message
         {
+            private static readonly int TypeId = System.Threading.Interlocked.Increment(ref NextMsgId);
+            public override int MsgTypeId { get { return TypeId; } }
+
+            public readonly Guid CorrelationId;
             public readonly VNodeState State;
 
-            protected StateChangeMessage(VNodeState state)
+            protected StateChangeMessage(Guid correlationId, VNodeState state)
             {
+                Ensure.NotEmptyGuid(correlationId, "correlationId");
+                CorrelationId = correlationId;
                 State = state;
             }
         }
 
-        public class BecomeWorking: StateChangeMessage
+        public class BecomePreMaster : StateChangeMessage
         {
-            public BecomeWorking(): base(VNodeState.Master)
+            private static readonly int TypeId = System.Threading.Interlocked.Increment(ref NextMsgId);
+            public override int MsgTypeId { get { return TypeId; } }
+
+            public BecomePreMaster(Guid correlationId): base(correlationId, VNodeState.PreMaster)
+            {
+            }
+        }
+
+        public class BecomeMaster: StateChangeMessage
+        {
+            private static readonly int TypeId = System.Threading.Interlocked.Increment(ref NextMsgId);
+            public override int MsgTypeId { get { return TypeId; } }
+
+            public BecomeMaster(Guid correlationId): base(correlationId, VNodeState.Master)
             {
             }
         }
 
         public class BecomeShuttingDown : StateChangeMessage
         {
-            public BecomeShuttingDown(): base(VNodeState.ShuttingDown)
+            private static readonly int TypeId = System.Threading.Interlocked.Increment(ref NextMsgId);
+            public override int MsgTypeId { get { return TypeId; } }
+
+            public readonly bool ExitProcess;
+
+            public BecomeShuttingDown(Guid correlationId, bool exitProcess): base(correlationId, VNodeState.ShuttingDown)
             {
+                Ensure.NotEmptyGuid(correlationId, "correlationId");
+                ExitProcess = exitProcess;
             }
         }
 
         public class BecomeShutdown : StateChangeMessage
         {
-            public BecomeShutdown(): base(VNodeState.Shutdown)
+            private static readonly int TypeId = System.Threading.Interlocked.Increment(ref NextMsgId);
+            public override int MsgTypeId { get { return TypeId; } }
+
+            public BecomeShutdown(Guid correlationId): base(correlationId, VNodeState.Shutdown)
+            {
+            }
+        }
+
+        public class BecomeUnknown : StateChangeMessage
+        {
+            private static readonly int TypeId = System.Threading.Interlocked.Increment(ref NextMsgId);
+            public override int MsgTypeId { get { return TypeId; } }
+
+            public BecomeUnknown(Guid correlationId)
+                : base(correlationId, VNodeState.Unknown)
+            {
+            }
+        }
+
+        public abstract class ReplicaStateMessage : StateChangeMessage
+        {
+            private static readonly int TypeId = System.Threading.Interlocked.Increment(ref NextMsgId);
+            public override int MsgTypeId { get { return TypeId; } }
+
+            public readonly VNodeInfo Master;
+
+            protected ReplicaStateMessage(Guid correlationId, VNodeState state, VNodeInfo master)
+                : base(correlationId, state)
+            {
+                Ensure.NotNull(master, "master");
+                Master = master;
+            }
+        }
+
+        public class BecomePreReplica : ReplicaStateMessage
+        {
+            private static readonly int TypeId = System.Threading.Interlocked.Increment(ref NextMsgId);
+            public override int MsgTypeId { get { return TypeId; } }
+
+            public BecomePreReplica(Guid correlationId, VNodeInfo master): base(correlationId, VNodeState.PreReplica, master)
+            {
+            }
+        }
+
+        public class BecomeCatchingUp : ReplicaStateMessage
+        {
+            private static readonly int TypeId = System.Threading.Interlocked.Increment(ref NextMsgId);
+            public override int MsgTypeId { get { return TypeId; } }
+
+            public BecomeCatchingUp(Guid correlationId, VNodeInfo master): base(correlationId, VNodeState.CatchingUp, master)
+            {
+            }
+        }
+
+        public class BecomeClone : ReplicaStateMessage
+        {
+            private static readonly int TypeId = System.Threading.Interlocked.Increment(ref NextMsgId);
+            public override int MsgTypeId { get { return TypeId; } }
+
+            public BecomeClone(Guid correlationId, VNodeInfo master): base(correlationId, VNodeState.Clone, master)
+            {
+            }
+        }
+
+        public class BecomeSlave : ReplicaStateMessage
+        {
+            private static readonly int TypeId = System.Threading.Interlocked.Increment(ref NextMsgId);
+            public override int MsgTypeId { get { return TypeId; } }
+
+            public BecomeSlave(Guid correlationId, VNodeInfo master): base(correlationId, VNodeState.Slave, master)
             {
             }
         }
 
         public class ServiceShutdown : Message
         {
+            private static readonly int TypeId = System.Threading.Interlocked.Increment(ref NextMsgId);
+            public override int MsgTypeId { get { return TypeId; } }
+
             public readonly string ServiceName;
 
             public ServiceShutdown(string serviceName)
@@ -96,30 +202,81 @@ namespace EventStore.Core.Messages
 
         public class ShutdownTimeout : Message
         {
+            private static readonly int TypeId = System.Threading.Interlocked.Increment(ref NextMsgId);
+            public override int MsgTypeId { get { return TypeId; } }
         }
 
         public class VNodeConnectionLost : Message
         {
-            public readonly IPEndPoint VNodeEndPoint;
+            private static readonly int TypeId = System.Threading.Interlocked.Increment(ref NextMsgId);
+            public override int MsgTypeId { get { return TypeId; } }
 
-            public VNodeConnectionLost(IPEndPoint vNodeEndPoint)
+            public readonly IPEndPoint VNodeEndPoint;
+            public readonly Guid ConnectionId;
+
+            public VNodeConnectionLost(IPEndPoint vNodeEndPoint, Guid connectionId)
             {
+                Ensure.NotNull(vNodeEndPoint, "vNodeEndPoint");
+                Ensure.NotEmptyGuid(connectionId, "connectionId");
+
                 VNodeEndPoint = vNodeEndPoint;
+                ConnectionId = connectionId;
             }
         }
 
         public class VNodeConnectionEstablished : Message
         {
-            public readonly IPEndPoint VNodeEndPoint;
+            private static readonly int TypeId = System.Threading.Interlocked.Increment(ref NextMsgId);
+            public override int MsgTypeId { get { return TypeId; } }
 
-            public VNodeConnectionEstablished(IPEndPoint vNodeEndPoint)
+            public readonly IPEndPoint VNodeEndPoint;
+            public readonly Guid ConnectionId;
+
+            public VNodeConnectionEstablished(IPEndPoint vNodeEndPoint, Guid connectionId)
             {
+                Ensure.NotNull(vNodeEndPoint, "vNodeEndPoint");
+                Ensure.NotEmptyGuid(connectionId, "connectionId");
+
                 VNodeEndPoint = vNodeEndPoint;
+                ConnectionId = connectionId;
             }
         }
 
         public class ScavengeDatabase: Message
         {
+            private static readonly int TypeId = System.Threading.Interlocked.Increment(ref NextMsgId);
+            public override int MsgTypeId { get { return TypeId; } }
+        }
+
+        public class WaitForChaserToCatchUp : Message
+        {
+            private static readonly int TypeId = System.Threading.Interlocked.Increment(ref NextMsgId);
+            public override int MsgTypeId { get { return TypeId; } }
+
+            public readonly Guid CorrelationId;
+            public readonly TimeSpan TotalTimeWasted;
+
+            public WaitForChaserToCatchUp(Guid correlationId, TimeSpan totalTimeWasted)
+            {
+                Ensure.NotEmptyGuid(correlationId, "correlationId");
+
+                CorrelationId = correlationId;
+                TotalTimeWasted = totalTimeWasted;
+            }
+        }
+
+        public class ChaserCaughtUp : Message
+        {
+            private static readonly int TypeId = System.Threading.Interlocked.Increment(ref NextMsgId);
+            public override int MsgTypeId { get { return TypeId; } }
+
+            public readonly Guid CorrelationId;
+
+            public ChaserCaughtUp(Guid correlationId)
+            {
+                Ensure.NotEmptyGuid(correlationId, "correlationId");
+                CorrelationId = correlationId;
+            }
         }
     }
 }

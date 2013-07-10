@@ -30,24 +30,51 @@ using EventStore.Projections.Core.Messages;
 
 namespace EventStore.Projections.Core.Services.Processing
 {
-    class CheckpointSuggestedWorkItem : CheckpointWorkItemBase
+    internal class CheckpointSuggestedWorkItem : CheckpointWorkItemBase
     {
-        private readonly ProjectionSubscriptionMessage.CheckpointSuggested _message;
+        private readonly CoreProjection _projection;
+        private readonly EventReaderSubscriptionMessage.CheckpointSuggested _message;
         private readonly ICoreProjectionCheckpointManager _checkpointManager;
 
+        private bool _completed = false;
+        private bool _completeRequested = false;
+
         public CheckpointSuggestedWorkItem(
-            CoreProjection projection, ProjectionSubscriptionMessage.CheckpointSuggested message,
+            CoreProjection projection, EventReaderSubscriptionMessage.CheckpointSuggested message,
             ICoreProjectionCheckpointManager checkpointManager)
             : base(projection) 
         {
+            _projection = projection;
             _message = message;
             _checkpointManager = checkpointManager;
         }
 
         protected override void WriteOutput()
         {
-            _checkpointManager.CheckpointSuggested(_message.CheckpointTag, _message.Progress);
+            _projection.SetCurrentCheckpointSuggestedWorkItem(this);
+            if (_checkpointManager.CheckpointSuggested(_message.CheckpointTag, _message.Progress))
+            {
+                _projection.SetCurrentCheckpointSuggestedWorkItem(null);
+                _completed = true;
+            }
+            _projection.NewCheckpointStarted(_message.CheckpointTag);
             NextStage();
+        }
+
+        protected override void CompleteItem()
+        {
+            if (_completed)
+                NextStage();
+            else
+                _completeRequested = true;
+        }
+
+        internal void CheckpointCompleted()
+        {
+            if (_completeRequested)
+                NextStage();
+            else
+                _completed = true;
         }
     }
 }

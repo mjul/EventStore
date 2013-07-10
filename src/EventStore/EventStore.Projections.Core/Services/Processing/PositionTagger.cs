@@ -33,12 +33,14 @@ namespace EventStore.Projections.Core.Services.Processing
     public abstract class PositionTagger
     {
         public abstract bool IsMessageAfterCheckpointTag(
-            CheckpointTag previous, ProjectionCoreServiceMessage.CommittedEventDistributed comittedEvent);
+            CheckpointTag previous, ReaderSubscriptionMessage.CommittedEventDistributed committedEvent);
 
-        public abstract CheckpointTag MakeCheckpointTag(CheckpointTag previous, ProjectionCoreServiceMessage.CommittedEventDistributed comittedEvent);
+        public abstract CheckpointTag MakeCheckpointTag(CheckpointTag previous, ReaderSubscriptionMessage.CommittedEventDistributed committedEvent);
 
         public abstract CheckpointTag MakeZeroCheckpointTag();
 
         public abstract bool IsCompatible(CheckpointTag checkpointTag);
+
+        public abstract CheckpointTag AdjustTag(CheckpointTag tag);
     }
 }

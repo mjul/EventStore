@@ -27,6 +27,7 @@
 // 
 
 using System;
+using EventStore.Common.Log;
 using EventStore.Core.Bus;
 using EventStore.Projections.Core.Messages;
 
@@ -34,15 +35,17 @@ namespace EventStore.Projections.Core.Services.Processing
 {
     public class CoreProjectionQueue
     {
+        private readonly ILogger _logger = LogManager.GetLoggerFor<CoreProjectionQueue>();
         private readonly StagedProcessingQueue _queuePendingEvents =
             new StagedProcessingQueue(
                 new[]
                     {
-                        true /* record event order */, true
-                        /* get state partition - ordered as it may change correlation id */, false
-                        /* load foreach state */, false
-                        /* process Js */, true
-                        /* write emits */
+                        true /* record event order - async with ordered output*/, 
+                        true /* get state partition - ordered as it may change correlation id - sync */, 
+                        false /* load foreach state - async- unordered completion*/, 
+                        false /* process Js - unordered - inherently unordered completion*/, 
+                        true /* write emits - ordered - async ordered completion*/, 
+                        false /* complete item */ 
                     });
 
         private readonly IPublisher _publisher;
@@ -69,13 +72,17 @@ namespace EventStore.Projections.Core.Services.Processing
             _lastEnqueuedEventTag = default(CheckpointTag);
             _subscriptionPaused = false;
             _unsubscribed = false;
+            _lastReportedStatisticsTimeStamp = default(DateTime);
+            _unsubscribed = false;
+            _subscriptionId = Guid.Empty;
+
             _queuePendingEvents.Initialize();
         }
 
         public void ProcessEvent()
         {
             if (_queuePendingEvents.Count > 0)
-                ProcessOneEvent();
+                ProcessOneEventBatch();
         }
 
         public int GetBufferedEventCount()
@@ -92,6 +99,9 @@ namespace EventStore.Projections.Core.Services.Processing
 
         public void EnqueueOutOfOrderTask(WorkItem workItem)
         {
+            if (_lastEnqueuedEventTag == null)
+                throw new InvalidOperationException(
+                    "Cannot enqueue an out-of-order task.  The projection position is currently unknown.");
             workItem.SetCheckpointTag(_lastEnqueuedEventTag);
             _queuePendingEvents.Enqueue(workItem);
         }
@@ -120,36 +130,39 @@ namespace EventStore.Projections.Core.Services.Processing
 
         private void PauseSubscription()
         {
+            if (_subscriptionId == Guid.Empty)
+                throw new InvalidOperationException("Not subscribed");
             if (!_subscriptionPaused && !_unsubscribed)
             {
                 _subscriptionPaused = true;
                 _publisher.Publish(
-                    new ProjectionSubscriptionManagement.Pause(_projectionCorrelationId));
+                    new ReaderSubscriptionManagement.Pause(_subscriptionId));
             }
         }
 
         private void ResumeSubscription()
         {
+            if (_subscriptionId == Guid.Empty)
+                throw new InvalidOperationException("Not subscribed");
             if (_subscriptionPaused && !_unsubscribed)
             {
-
                 _subscriptionPaused = false;
                 _publisher.Publish(
-                    new ProjectionSubscriptionManagement.Resume(_projectionCorrelationId));
+                    new ReaderSubscriptionManagement.Resume(_subscriptionId));
             }
         }
 
         private DateTime _lastReportedStatisticsTimeStamp = default(DateTime);
         private bool _unsubscribed;
+        private Guid _subscriptionId;
 
-        private void ProcessOneEvent()
+        private void ProcessOneEventBatch()
         {
-            int pendingEventsCount = _queuePendingEvents.Count;
-            if (pendingEventsCount > _pendingEventsThreshold)
+            if (_queuePendingEvents.Count > _pendingEventsThreshold)
                 PauseSubscription();
-            if (_subscriptionPaused && pendingEventsCount < _pendingEventsThreshold/2)
+            _queuePendingEvents.Process(max: 30);
+            if (_subscriptionPaused && _queuePendingEvents.Count < _pendingEventsThreshold / 2)
                 ResumeSubscription();
-            _queuePendingEvents.Process();
 
             if (_updateStatistics != null
                 && ((_queuePendingEvents.Count == 0)
@@ -161,6 +174,15 @@ namespace EventStore.Projections.Core.Services.Processing
         public void Unsubscribed()
         {
             _unsubscribed = true;
+        }
+
+        public void Subscribed(Guid currentSubscriptionId)
+        {
+            if (_unsubscribed)
+                throw new InvalidOperationException("Unsubscribed");
+            if (_subscriptionId != Guid.Empty)
+                throw new InvalidOperationException("Already subscribed");
+            _subscriptionId = currentSubscriptionId;
         }
     }
 }

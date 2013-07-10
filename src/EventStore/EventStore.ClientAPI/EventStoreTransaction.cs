@@ -29,6 +29,8 @@ using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
 using EventStore.ClientAPI.Common.Utils;
+using EventStore.ClientAPI.Core;
+using EventStore.ClientAPI.SystemData;
 
 namespace EventStore.ClientAPI
 {
@@ -39,7 +41,8 @@ namespace EventStore.ClientAPI
     {
         public readonly long TransactionId;
 
-        private readonly EventStoreConnection _connection;
+        private readonly UserCredentials _userCredentials;
+        private readonly IEventStoreTransactionConnection _connection;
         private bool _isRolledBack;
         private bool _isCommitted;
 
@@ -47,12 +50,14 @@ namespace EventStore.ClientAPI
         /// Constructs a new <see cref="EventStoreTransaction"/>
         /// </summary>
         /// <param name="transactionId">The transaction id of the transaction</param>
+        /// <param name="userCredentials">User credentials under which transaction is committed.</param>
         /// <param name="connection">The connection the transaction is hooked to</param>
-        internal EventStoreTransaction(long transactionId, EventStoreConnection connection)
+        internal EventStoreTransaction(long transactionId, UserCredentials userCredentials, IEventStoreTransactionConnection connection)
         {
             Ensure.Nonnegative(transactionId, "transactionId");
 
             TransactionId = transactionId;
+            _userCredentials = userCredentials;
             _connection = connection;
         }
 
@@ -73,7 +78,7 @@ namespace EventStore.ClientAPI
             if (_isRolledBack) throw new InvalidOperationException("Can't commit a rolledback transaction");
             if (_isCommitted) throw new InvalidOperationException("Transaction is already committed");
             _isCommitted = true;
-            return _connection.CommitTransactionAsync(this);
+            return _connection.CommitTransactionAsync(this, _userCredentials);
         }
 
         /// <summary>

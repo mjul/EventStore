@@ -27,24 +27,20 @@
 //  
 
 using System;
+using System.Net;
 using EventStore.ClientAPI.Common.Utils;
+using EventStore.ClientAPI.SystemData;
 
 namespace EventStore.ClientAPI
 {
-    public class ConnectionSettings
+    public sealed class ConnectionSettings
     {
         private static readonly Lazy<ConnectionSettings> DefaultSettings = new Lazy<ConnectionSettings>(() => Create(), true);
 
         /// <summary>
         /// The default <see cref="ConnectionSettings"></see>
         /// </summary>
-        public static ConnectionSettings Default
-        {
-            get
-            {
-                return DefaultSettings.Value;
-            }
-        }
+        public static ConnectionSettings Default { get { return DefaultSettings.Value; } }
 
         /// <summary>
         /// Creates a new set of <see cref="ConnectionSettings"/>
@@ -60,26 +56,29 @@ namespace EventStore.ClientAPI
         /// </summary>
         public readonly ILogger Log;
         /// <summary>
+        /// Whether or not do excessive logging of <see cref="EventStoreConnection"/> internal logic.
+        /// </summary>
+        public readonly bool VerboseLogging;
+        /// <summary>
         /// The maximum number of outstanding items allowed in the queue
         /// </summary>
         public readonly int MaxQueueSize;
-
         /// <summary>
-        /// The maximum number of allowed asyncrhonous operations to be in process
+        /// The maximum number of allowed asynchronous operations to be in process
         /// </summary>
         public readonly int MaxConcurrentItems;
         /// <summary>
         /// The maximum number of retry attempts
         /// </summary>
-        public readonly int MaxAttempts;
+        public readonly int MaxRetries;
         /// <summary>
         /// The maximum number of times to allow for reconnection
         /// </summary>
         public readonly int MaxReconnections;
         /// <summary>
-        /// Whether or not to allow the event store to forward a message if it is unable to process it (cluster version only)
+        /// Whether or not to require EventStore to refuse serving read or write request if it is not master
         /// </summary>
-        public readonly bool AllowForwarding;
+        public readonly bool RequireMaster;
         /// <summary>
         /// The amount of time to delay before attempting to reconnect
         /// </summary>
@@ -93,190 +92,100 @@ namespace EventStore.ClientAPI
         /// </summary>
         public readonly TimeSpan OperationTimeoutCheckPeriod;
 
+        public readonly UserCredentials DefaultUserCredentials;
+        public readonly bool UseSslConnection;
+        public readonly string TargetHost;
+        public readonly bool ValidateServer;
+
+        /// <summary>
+        /// Raised whenever the internal error occurs
+        /// </summary>
+        public Action<IEventStoreConnection, Exception> ErrorOccurred;
+        /// <summary>
+        /// Raised whenever the connection is closed
+        /// </summary>
+        public Action<IEventStoreConnection, string> Closed;
+        /// <summary>
+        /// Raised whenever the internal connection is connected to the event store
+        /// </summary>
+        public Action<IEventStoreConnection, IPEndPoint> Connected;
+        /// <summary>
+        /// Raised whenever the internal connection is disconnected from the event store
+        /// </summary>
+        public Action<IEventStoreConnection, IPEndPoint> Disconnected;
+        /// <summary>
+        /// Raised whenever the internal connection is reconnecting to the event store
+        /// </summary>
+        public Action<IEventStoreConnection> Reconnecting;
+        /// <summary>
+        /// Raised whenever the connection default user credentials authentication fails
+        /// </summary>
+        public Action<IEventStoreConnection, string> AuthenticationFailed;
+
+        public readonly bool FailOnNoServerResponse;
+        public readonly TimeSpan HeartbeatInterval;
+        public readonly TimeSpan HeartbeatTimeout;
+
         internal ConnectionSettings(ILogger log,
+                                    bool verboseLogging,
                                     int maxQueueSize,
                                     int maxConcurrentItems,
-                                    int maxAttempts,
+                                    int maxRetries,
                                     int maxReconnections,
-                                    bool allowForwarding,
+                                    bool requireMaster,
                                     TimeSpan reconnectionDelay,
                                     TimeSpan operationTimeout,
-                                    TimeSpan operationTimeoutCheckPeriod)
+                                    TimeSpan operationTimeoutCheckPeriod,
+                                    UserCredentials defaultUserCredentials,
+                                    bool useSslConnection,
+                                    string targetHost,
+                                    bool validateServer,
+                                    Action<IEventStoreConnection, Exception> errorOccurred,
+                                    Action<IEventStoreConnection, string> closed,
+                                    Action<IEventStoreConnection, IPEndPoint> connected,
+                                    Action<IEventStoreConnection, IPEndPoint> disconnected,
+                                    Action<IEventStoreConnection> reconnecting,
+                                    Action<IEventStoreConnection, string> authenticationFailed,
+                                    bool failOnNoServerResponse,
+                                    TimeSpan heartbeatInterval,
+                                    TimeSpan heartbeatTimeout)
         {
+            Ensure.NotNull(log, "log");
+            Ensure.Positive(maxQueueSize, "maxQueueSize");
+            Ensure.Positive(maxConcurrentItems, "maxConcurrentItems");
+            if (maxRetries < -1)
+                throw new ArgumentOutOfRangeException("maxRetries", string.Format("maxRetries value is out of range: {0}. Allowed range: [-1, infinity].", maxRetries));
+            if (maxReconnections < -1)
+                throw new ArgumentOutOfRangeException("maxReconnections", string.Format("maxReconnections value is out of range: {0}. Allowed range: [-1, infinity].", maxRetries));
+            if (useSslConnection)
+                Ensure.NotNullOrEmpty(targetHost, "targetHost");
+
             Log = log;
+            VerboseLogging = verboseLogging;
             MaxQueueSize = maxQueueSize;
             MaxConcurrentItems = maxConcurrentItems;
-            MaxAttempts = maxAttempts;
+            MaxRetries = maxRetries;
             MaxReconnections = maxReconnections;
-            AllowForwarding = allowForwarding;
+            RequireMaster = requireMaster;
             ReconnectionDelay = reconnectionDelay;
             OperationTimeout = operationTimeout;
             OperationTimeoutCheckPeriod = operationTimeoutCheckPeriod;
-        }
-    }
 
-    /// <summary>
-    /// Used to build a connection settings (fluent API)
-    /// </summary>
-    public class ConnectionSettingsBuilder
-    {
-        private ILogger _log;
+            DefaultUserCredentials = defaultUserCredentials;
+            UseSslConnection = useSslConnection;
+            TargetHost = targetHost;
+            ValidateServer = validateServer;
 
-        private int _maxQueueSize;
-        private int _maxConcurrentItems;
-        private int _maxAttempts;
-        private int _maxReconnections;
+            ErrorOccurred = errorOccurred;
+            Closed = closed;
+            Connected = connected;
+            Disconnected = disconnected;
+            Reconnecting = reconnecting;
+            AuthenticationFailed = authenticationFailed;
 
-        private bool _allowForwarding;
-
-        private TimeSpan _reconnectionDelay;
-        private TimeSpan _operationTimeout;
-        private TimeSpan _operationTimeoutCheckPeriod;
-
-        internal ConnectionSettingsBuilder()
-        {
-            _log = null;
-
-            _maxQueueSize = 5000;
-            _maxConcurrentItems = 5000;
-            _maxAttempts = 10;
-            _maxReconnections = 10;
-
-            _allowForwarding = true;
-
-            _reconnectionDelay = TimeSpan.FromSeconds(3);
-            _operationTimeout = TimeSpan.FromSeconds(7);
-            _operationTimeoutCheckPeriod = TimeSpan.FromSeconds(1);
-        }
-
-
-        /// <summary>
-        /// Configures the connection to utilize a given logger.
-        /// </summary>
-        /// <param name="logger">The <see cref="ILogger"/> to use.</param>
-        /// <returns></returns>
-        public ConnectionSettingsBuilder UseLogger(ILogger logger)
-        {
-            _log = logger;
-            return this;
-        }
-
-        /// <summary>
-        /// Sets the limit for number of outstanding operations
-        /// </summary>
-        /// <param name="limit">The new limit of outstanding operations</param>
-        /// <returns></returns>
-        public ConnectionSettingsBuilder LimitOperationsQueueTo(int limit)
-        {
-            Ensure.Positive(limit, "limit");
-
-            _maxQueueSize = limit;
-            return this;
-        }
-
-        /// <summary>
-        /// Limits the number of concurrent operations that this connection can have
-        /// </summary>
-        /// <param name="limit"></param>
-        /// <returns></returns>
-        public ConnectionSettingsBuilder LimitConcurrentOperationsTo(int limit)
-        {
-            Ensure.Positive(limit, "limit");
-
-            _maxConcurrentItems = limit;
-            return this;
-        }
-
-        /// <summary>
-        /// Limits the number of retry attempts for a given operation
-        /// </summary>
-        /// <param name="limit"></param>
-        /// <returns></returns>
-        public ConnectionSettingsBuilder LimitAttemptsForOperationTo(int limit)
-        {
-            Ensure.Positive(limit, "limit");
-
-            _maxAttempts = limit;
-            return this;
-        }
-
-        /// <summary>
-        /// Limits the number of reconnections this connection can try to make
-        /// </summary>
-        /// <param name="limit"></param>
-        /// <returns></returns>
-        public ConnectionSettingsBuilder LimitReconnectionsTo(int limit)
-        {
-            Ensure.Nonnegative(limit, "limit");
-
-            _maxReconnections = limit;
-            return this;
-        }
-
-        /// <summary>
-        /// Enables the forwarding of operations in the Event Store (cluster version only) 
-        /// </summary>
-        /// <returns></returns>
-        public ConnectionSettingsBuilder EnableOperationsForwarding()
-        {
-            _allowForwarding = true;
-            return this;
-        }
-
-        /// <summary>
-        /// Disables the forwarding operations in the Event Store (cluster version only)
-        /// </summary>
-        /// <returns></returns>
-        public ConnectionSettingsBuilder DisableOperationsForwarding()
-        {
-            _allowForwarding = false;
-            return this;
-        }
-
-        /// <summary>
-        /// Sets the delay between reconnection attempts
-        /// </summary>
-        /// <param name="reconnectionDelay"></param>
-        /// <returns></returns>
-        public ConnectionSettingsBuilder SetReconnectionDelayTo(TimeSpan reconnectionDelay)
-        {
-            _reconnectionDelay = reconnectionDelay;
-            return this;
-        }
-
-        /// <summary>
-        /// Sets the operation timeout duration
-        /// </summary>
-        /// <param name="operationTimeout"></param>
-        /// <returns></returns>
-        public ConnectionSettingsBuilder SetOperationTimeoutTo(TimeSpan operationTimeout)
-        {
-            _operationTimeout = operationTimeout;
-            return this;
-        }
-
-        /// <summary>
-        /// Sets how often timeouts should be checked for.
-        /// </summary>
-        /// <param name="timeoutCheckPeriod"></param>
-        /// <returns></returns>
-        public ConnectionSettingsBuilder SetTimeoutCheckPeriodTo(TimeSpan timeoutCheckPeriod)
-        {
-            _operationTimeoutCheckPeriod = timeoutCheckPeriod;
-            return this;
-        }
-
-        public static implicit operator ConnectionSettings(ConnectionSettingsBuilder builder)
-        {
-            return new ConnectionSettings(builder._log,
-                                          builder._maxQueueSize,
-                                          builder._maxConcurrentItems,
-                                          builder._maxAttempts,
-                                          builder._maxReconnections,
-                                          builder._allowForwarding,
-                                          builder._reconnectionDelay,
-                                          builder._operationTimeout,
-                                          builder._operationTimeoutCheckPeriod);
+            FailOnNoServerResponse = failOnNoServerResponse;
+            HeartbeatInterval = heartbeatInterval;
+            HeartbeatTimeout = heartbeatTimeout;
         }
     }
 }

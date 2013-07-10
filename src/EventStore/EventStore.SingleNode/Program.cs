@@ -28,20 +28,25 @@
 using System;
 using System.IO;
 using System.Net;
+using System.Security.Cryptography.X509Certificates;
 using EventStore.Core;
 using EventStore.Core.Services.Monitoring;
+using EventStore.Core.Services.Transport.Http.Controllers;
 using EventStore.Core.Settings;
 using EventStore.Core.TransactionLog.Chunks;
 using EventStore.Common.Utils;
 using System.Linq;
+using EventStore.Web.Playground;
+using EventStore.Web.Users;
 
 namespace EventStore.SingleNode
 {
     public class Program : ProgramBase<SingleNodeOptions>
     {
         private SingleVNode _node;
-        private Projections.Core.Projections _projections;
+        private Projections.Core.ProjectionsSubsystem _projections;
         private readonly DateTime _startupTimeStamp = DateTime.UtcNow;
+        private ExclusiveDbLock _dbLock;
 
         public static int Main(string[] args)
         {
@@ -66,41 +71,74 @@ namespace EventStore.SingleNode
 
         protected override string GetComponentName(SingleNodeOptions options)
         {
-            return string.Format("{0}-{1}", options.Ip, options.HttpPort);
+            return string.Format("{0}-{1}-single-node", options.Ip, options.HttpPort);
         }
 
         protected override void Create(SingleNodeOptions options)
         {
             var dbPath = Path.GetFullPath(ResolveDbPath(options.DbPath, options.HttpPort));
-            Log.Info("\n{0,-25} {1}\n", "DATABASE:", dbPath);
-            var db = new TFChunkDb(CreateDbConfig(dbPath, options.CachedChunks));
+
+            _dbLock = new ExclusiveDbLock(dbPath);
+            if (!_dbLock.Acquire())
+                throw new Exception(string.Format("Couldn't acquire exclusive lock on DB at '{0}'.", dbPath));
+
+            var db = new TFChunkDb(CreateDbConfig(dbPath, options.CachedChunks, options.ChunksCacheSize));
             var vnodeSettings = GetVNodeSettings(options);
             var dbVerifyHashes = !options.SkipDbVerify;
-            _node = new SingleVNode(db, vnodeSettings, dbVerifyHashes);
+            var runProjections = options.RunProjections;
 
-            if (options.RunProjections)
-            {
-                _projections = new Projections.Core.Projections(db,
-                                                                _node.MainQueue,
-                                                                _node.Bus,
-                                                                _node.TimerService,
-                                                                _node.HttpService,
-                                                                _node.NetworkSendService,
-                                                                options.ProjectionThreads);
-            }
+            Log.Info("\n{0,-25} {1}\n{2,-25} {3} (0x{3:X})\n{4,-25} {5} (0x{5:X})\n{6,-25} {7} (0x{7:X})\n{8,-25} {9} (0x{9:X})\n",
+                     "DATABASE:", db.Config.Path,
+                     "WRITER CHECKPOINT:", db.Config.WriterCheckpoint.Read(),
+                     "CHASER CHECKPOINT:", db.Config.ChaserCheckpoint.Read(),
+                     "EPOCH CHECKPOINT:", db.Config.EpochCheckpoint.Read(),
+                     "TRUNCATE CHECKPOINT:", db.Config.TruncateCheckpoint.Read());
+
+            var enabledNodeSubsystems = runProjections ? new[] {NodeSubsystems.Projections} : new NodeSubsystems[0];
+            _projections = new Projections.Core.ProjectionsSubsystem(options.ProjectionThreads, runProjections);
+            _node = new SingleVNode(db, vnodeSettings, dbVerifyHashes, ESConsts.MemTableEntryCount, _projections);
+            RegisterWebControllers(enabledNodeSubsystems);
+            RegisterUIProjections();
+        }
+
+        private void RegisterUIProjections()
+        {
+            var users = new UserManagementProjectionsRegistration();
+            _node.MainBus.Subscribe(users);
+        }
+
+        private void RegisterWebControllers(NodeSubsystems[] enabledNodeSubsystems)
+        {
+            _node.HttpService.SetupController(new WebSiteController(_node.MainQueue, enabledNodeSubsystems));
+            _node.HttpService.SetupController(new UsersWebController(_node.MainQueue));
         }
 
         private static SingleVNodeSettings GetVNodeSettings(SingleNodeOptions options)
         {
+            X509Certificate2 certificate = null;
+            if (options.SecureTcpPort > 0)
+            {
+                if (options.CertificateStore.IsNotEmptyString())
+                    certificate = LoadCertificateFromStore(options.CertificateStore, options.CertificateName);
+                else if (options.CertificateFile.IsNotEmptyString())
+                    certificate = LoadCertificateFromFile(options.CertificateFile, options.CertificatePassword);
+                else
+                    throw new Exception("No server certificate specified.");
+            }
+
             var tcpEndPoint = new IPEndPoint(options.Ip, options.TcpPort);
+            var secureTcpEndPoint = options.SecureTcpPort > 0 ? new IPEndPoint(options.Ip, options.SecureTcpPort) : null;
             var httpEndPoint = new IPEndPoint(options.Ip, options.HttpPort);
             var prefixes = options.HttpPrefixes.IsNotEmpty() ? options.HttpPrefixes : new[] {httpEndPoint.ToHttpUrl()};
             var vnodeSettings = new SingleVNodeSettings(tcpEndPoint,
+                                                        secureTcpEndPoint,
                                                         httpEndPoint, 
                                                         prefixes.Select(p => p.Trim()).ToArray(),
-                                                        options.HttpSendThreads,
-                                                        options.HttpReceiveThreads,
-                                                        options.TcpSendThreads,
+                                                        options.EnableTrustedAuth,
+                                                        certificate,
+                                                        options.WorkerThreads, options.MinFlushDelayMs,
+                                                        TimeSpan.FromMilliseconds(options.PrepareTimeoutMs),
+                                                        TimeSpan.FromMilliseconds(options.CommitTimeoutMs),
                                                         TimeSpan.FromSeconds(options.StatsPeriodSec),
                                                         StatsStorage.StreamAndCsv);
             return vnodeSettings;
@@ -109,14 +147,21 @@ namespace EventStore.SingleNode
         protected override void Start()
         {
             _node.Start();
-
-            if (_projections != null)
-                _projections.Start();
+            
+            _node.HttpService.SetupController(new TestController(_node.MainQueue/*, _node.NetworkSendService*/));
         }
 
         public override void Stop()
         {
-            _node.Stop();
+            _node.Stop(exitProcess: true);
+        }
+
+        protected override void OnProgramExit()
+        {
+            base.OnProgramExit();
+
+            if (_dbLock != null && _dbLock.IsAcquired)
+                _dbLock.Release();
         }
     }
 }

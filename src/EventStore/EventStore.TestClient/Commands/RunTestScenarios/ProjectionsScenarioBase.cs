@@ -30,13 +30,14 @@ using System;
 using System.Collections.Generic;
 using System.Net;
 using System.Threading;
-using EventStore.Core.Services.Transport.Http.Codecs;
+using EventStore.Transport.Http.Codecs;
 
 namespace EventStore.TestClient.Commands.RunTestScenarios
 {
     internal abstract class ProjectionsScenarioBase : ScenarioBase
     {
-        protected ProjectionsScenarioBase(Action<IPEndPoint, byte[]> directSendOverTcp, int maxConcurrentRequests, int connections, int streams, int eventsPerStream, int streamDeleteStep, string dbParentPath) : base(directSendOverTcp, maxConcurrentRequests, connections, streams, eventsPerStream, streamDeleteStep, dbParentPath)
+        protected ProjectionsScenarioBase(Action<IPEndPoint, byte[]> directSendOverTcp, int maxConcurrentRequests, int connections, int streams, int eventsPerStream, int streamDeleteStep, string dbParentPath, NodeConnectionInfo customNode)
+            : base(directSendOverTcp, maxConcurrentRequests, connections, streams, eventsPerStream, streamDeleteStep, dbParentPath, customNode)
         {
         }
 
@@ -64,7 +65,7 @@ namespace EventStore.TestClient.Commands.RunTestScenarios
             var dic = GetProjectionStatistics(projectionName);
 
             string value;
-            var isRunning = dic.TryGetValue("status", out value) && value == "Running";
+            var isRunning = dic != null && dic.TryGetValue("status", out value) && value == "Running";
 
             return isRunning;
         }
@@ -76,8 +77,20 @@ namespace EventStore.TestClient.Commands.RunTestScenarios
             long result = -1;
 
             string value;
-            if (dic.TryGetValue("position", out value))
-                result = long.Parse(value.Split(':')[1]);
+            if (dic != null && dic.TryGetValue("position", out value))
+            {
+                if (!string.IsNullOrWhiteSpace(value))
+                {
+                    var subpositions = value.Split(':');
+                    var positionString = subpositions.Length == 2 ? subpositions[1] : value;
+                    result = long.Parse(positionString);
+                }
+                else
+                {
+                    result = -1;
+                }
+                return result;
+            }
 
             return result;
         }
@@ -87,7 +100,7 @@ namespace EventStore.TestClient.Commands.RunTestScenarios
             var dic = GetProjectionStatistics(projectionName);
 
             string status;
-            var isFaulted = dic.TryGetValue("status", out status) && status.StartsWith("Faulted");
+            var isFaulted = dic != null && dic.TryGetValue("status", out status) && status.StartsWith("Faulted");
 
             if (isFaulted)
                 dic.TryGetValue("stateReason", out reason);
@@ -102,7 +115,7 @@ namespace EventStore.TestClient.Commands.RunTestScenarios
             string rawState;
             try
             {
-                rawState = GetProjectionsManager().GetStatistics(projectionName);
+                rawState = GetProjectionsManager().GetStatistics(projectionName, AdminCredentials);
             }
             catch (Exception ex)
             {
@@ -151,7 +164,7 @@ namespace EventStore.TestClient.Commands.RunTestScenarios
             string rawState;
             try
             {
-                rawState = GetProjectionsManager().GetState(projectionName);
+                rawState = GetProjectionsManager().GetState(projectionName, AdminCredentials);
             }
             catch (Exception ex)
             {
@@ -177,7 +190,7 @@ namespace EventStore.TestClient.Commands.RunTestScenarios
                     if (!isRunning)
                     {
                         Log.Debug(string.Format("Enable *{0}* projection", byCategoryProjection));
-                        GetProjectionsManager().Enable(byCategoryProjection);
+                        GetProjectionsManager().Enable(byCategoryProjection, AdminCredentials);
                     }
                     else
                     {

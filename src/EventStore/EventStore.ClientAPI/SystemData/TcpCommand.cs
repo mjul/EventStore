@@ -1,10 +1,10 @@
 // Copyright (c) 2012, Event Store LLP
 // All rights reserved.
-//  
+// 
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are
 // met:
-//  
+// 
 // Redistributions of source code must retain the above copyright notice,
 // this list of conditions and the following disclaimer.
 // Redistributions in binary form must reproduce the above copyright
@@ -24,10 +24,10 @@
 // THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-//  
+// 
 namespace EventStore.ClientAPI.SystemData
 {
-    internal enum TcpCommand: byte
+    public enum TcpCommand: byte
     {
         HeartbeatRequestCommand = 0x01,
         HeartbeatResponseCommand = 0x02,
@@ -42,13 +42,16 @@ namespace EventStore.ClientAPI.SystemData
         CloneAssignment = 0x08,
 
         SubscribeReplica = 0x10,
-        CreateChunk = 0x11,
-        PhysicalChunkBulk = 0x12,
-        LogicalChunkBulk = 0x13,
+        ReplicaLogPositionAck = 0x11,
+        CreateChunk = 0x12,
+        RawChunkBulk = 0x13,
+        DataChunkBulk = 0x14,
+        ReplicaSubscriptionRetry = 0x15,
+        ReplicaSubscribed = 0x16,
 
         // CLIENT COMMANDS
-        CreateStream = 0x80,
-        CreateStreamCompleted = 0x81,
+//        CreateStream = 0x80,
+//        CreateStreamCompleted = 0x81,
 
         WriteEvents = 0x82,
         WriteEventsCompleted = 0x83,
@@ -83,6 +86,9 @@ namespace EventStore.ClientAPI.SystemData
         ScavengeDatabase = 0xD0,
 
         BadRequest = 0xF0,
-        DeniedToRoute = 0xF1
-    }
+        NotHandled = 0xF1,
+        Authenticate = 0xF2,
+        Authenticated = 0xF3,
+        NotAuthenticated = 0xF4
+   }
 }

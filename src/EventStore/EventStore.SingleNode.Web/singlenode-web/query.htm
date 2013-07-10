@@ -15,7 +15,7 @@
     <div id="content">
         <h1>Query</h1>
         <h3><span id="status"></span></h3>
-        <div id="message" class="error" style="display: none;"></div>
+        <div id="message" class="error head-error" style="display: none;"></div>
         <div class="row">
             <div class="span12">
                 <div id="commands-container">
@@ -41,8 +41,6 @@
     // NOTE: this sample query immediately stops unless you have 
     // either event_type1 or event_type1 events in the store
     options({
-                useEventIndexes: true,            // makes a fromAll() projection to use event indexes 
-                                                  // NOTE: $by_event_type standard projection should be enabled
                 // reorderEvents: false,          // enables event reordering in a multi-stream projection
                                                   // event reordering atempts to feed the projection with events in a 
                                                   // their natural order
@@ -53,7 +51,7 @@
     // fromStream('streamId') | fromStreams(['sream1', 'stream2']) | fromCategory('category')
        //NOTE: fromCategory requires $by_category standard projection to be enabled
 
-    // .foreachStream() | .paritionBy(function(e) { return e.body.useId; })
+    // .foreachStream() | .partitionBy(function(e) { return e.body.useId; })
 
     .when({
         $init: function () {
@@ -103,8 +101,8 @@
 
     <script type="text/javascript">
         require.config({ baseUrl: "/web/es/js" });
-        require(['projections/Observer', 'projections/Controller', 'projections/ui/Editor'],
-            function (observer, controller, editor) {
+        require(['projections/Observer', 'projections/Controller', 'projections/ui/Editor', 'projections/ui/Ace'],
+            function (observer, controller, editor, aceEditor) {
                 $(function() {
                     var controls = {
                         status: $("#status"),
@@ -117,11 +115,12 @@
                         debug: $("#btn-debug"),
                     };
                     var url = window.location.hash.substr(1);
+                    var sourceEdit = aceEditor.createAceEditor($("#ace-source"));
                     var projectionEditor;
                     if (url) {
-                        projectionEditor = editor.openQuery(url, controls);
+                        projectionEditor = editor.openQuery(url, sourceEdit, controls, {});
                     } else {
-                        projectionEditor = editor.createQuery(controls);
+                        projectionEditor = editor.createQuery(sourceEdit, controls, {});
                     }
                     projectionEditor.bind();
                 });

@@ -26,12 +26,11 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 // 
 using System;
-using System.Net;
+using System.Security.Principal;
 using EventStore.Common.Utils;
 using EventStore.Core.Data;
 using EventStore.Core.Messaging;
-using EventStore.Core.Services.Storage.ReaderIndex;
-using EventStore.Core.Services.Transport.Tcp;
+using EventStore.Core.Services;
 using ReadStreamResult = EventStore.Core.Data.ReadStreamResult;
 
 namespace EventStore.Core.Messages
@@ -44,143 +43,168 @@ namespace EventStore.Core.Messages
         ForwardTimeout = 3,
         WrongExpectedVersion = 4,
         StreamDeleted = 5,
-        InvalidTransaction = 6
+        InvalidTransaction = 6,
+        AccessDenied = 7
     }
 
     public static class ClientMessage
     {
         public class RequestShutdown: Message
         {
-            public readonly bool ExitProcessOnShutdown;
+            private static readonly int TypeId = System.Threading.Interlocked.Increment(ref NextMsgId);
+            public override int MsgTypeId { get { return TypeId; } }
 
-            public RequestShutdown(bool exitProcessOnShutdown)
+            public readonly bool ExitProcess;
+
+            public RequestShutdown(bool exitProcess)
             {
-                ExitProcessOnShutdown = exitProcessOnShutdown;
+                ExitProcess = exitProcess;
             }
         }
 
         public abstract class WriteRequestMessage : Message
         {
-        }
+            private static readonly int TypeId = System.Threading.Interlocked.Increment(ref NextMsgId);
+            public override int MsgTypeId { get { return TypeId; } }
 
-        public abstract class WriteResponseMessage : Message
-        {
+            public readonly Guid InternalCorrId;
+            public readonly Guid CorrelationId;
+            public readonly IEnvelope Envelope;
+            public readonly bool RequireMaster;
+
+            public readonly IPrincipal User;
+            public readonly string Login;
+            public readonly string Password;
+
+            protected WriteRequestMessage(Guid internalCorrId,
+                                          Guid correlationId, IEnvelope envelope, bool requireMaster,
+                                          IPrincipal user, string login, string password)
+            {
+                Ensure.NotEmptyGuid(internalCorrId, "internalCorrId");
+                Ensure.NotEmptyGuid(correlationId, "correlationId");
+                Ensure.NotNull(envelope, "envelope");
+
+                InternalCorrId = internalCorrId;
+                CorrelationId = correlationId;
+                Envelope = envelope;
+                RequireMaster = requireMaster;
+
+                User = user;
+                Login = login;
+                Password = password;
+            }
         }
 
         public abstract class ReadRequestMessage: Message
         {
+            private static readonly int TypeId = System.Threading.Interlocked.Increment(ref NextMsgId);
+            public override int MsgTypeId { get { return TypeId; } }
+
+            public readonly Guid InternalCorrId;
+            public readonly Guid CorrelationId;
+            public readonly IEnvelope Envelope;
+
+            public readonly IPrincipal User;
+
+            protected ReadRequestMessage(Guid internalCorrId, Guid correlationId, IEnvelope envelope, IPrincipal user)
+            {
+                Ensure.NotEmptyGuid(internalCorrId, "internalCorrId");
+                Ensure.NotEmptyGuid(correlationId, "correlationId");
+                Ensure.NotNull(envelope, "envelope");
+
+                InternalCorrId = internalCorrId;
+                CorrelationId = correlationId;
+                Envelope = envelope;
+
+                User = user;
+            }
         }
 
         public abstract class ReadResponseMessage : Message
         {
+            private static readonly int TypeId = System.Threading.Interlocked.Increment(ref NextMsgId);
+            public override int MsgTypeId { get { return TypeId; } }
+
             internal static readonly ResolvedEvent[] EmptyRecords = new ResolvedEvent[0];
         }
 
-        public class ForwardMessage: Message
+        public class TcpForwardMessage: Message
         {
+            private static readonly int TypeId = System.Threading.Interlocked.Increment(ref NextMsgId);
+            public override int MsgTypeId { get { return TypeId; } }
+
             public readonly Message Message;
 
-            public ForwardMessage(Message message)
+            public TcpForwardMessage(Message message)
             {
+                Ensure.NotNull(message, "message");
+
                 Message = message;
             }
         }
 
-        public class DeniedToRoute : Message
+        public class NotHandled : Message
         {
+            private static readonly int TypeId = System.Threading.Interlocked.Increment(ref NextMsgId);
+            public override int MsgTypeId { get { return TypeId; } }
+
             public readonly Guid CorrelationId;
+            public readonly TcpClientMessageDto.NotHandled.NotHandledReason Reason;
+            public readonly object AdditionalInfo;
 
-            public readonly IPEndPoint ExternalTcpEndPoint;
-            public readonly IPEndPoint ExternalHttpEndPoint;
-
-            public DeniedToRoute(Guid correlationId, IPEndPoint externalTcpEndPoint, IPEndPoint externalHttpEndPoint)
+            public NotHandled(Guid correlationId,
+                              TcpClientMessageDto.NotHandled.NotHandledReason reason,
+                              object additionalInfo)
             {
                 CorrelationId = correlationId;
-                ExternalTcpEndPoint = externalTcpEndPoint;
-                ExternalHttpEndPoint = externalHttpEndPoint;
-            }
-        }
-
-        public class CreateStream: WriteRequestMessage
-        {
-            public readonly Guid CorrelationId;
-            public readonly IEnvelope Envelope;
-            public readonly bool AllowForwarding;
-
-            public readonly string EventStreamId;
-            public readonly Guid RequestId;
-            public readonly bool IsJson;
-            public readonly byte[] Metadata;
-
-            public CreateStream(Guid correlationId, IEnvelope envelope, bool allowForwarding, string eventStreamId, Guid requestId, bool isJson, byte[] metadata)
-            {
-                Ensure.NotNull(envelope, "envelope");
-                Ensure.NotNull(eventStreamId, "eventStreamId");
-                Ensure.NotEmptyGuid(requestId, "requestId");
-                
-                CorrelationId = correlationId == Guid.Empty ? Guid.NewGuid() : correlationId;
-                Envelope = envelope;
-                AllowForwarding = allowForwarding;
-                EventStreamId = eventStreamId;
-                RequestId = requestId;
-                IsJson = isJson;
-                Metadata = metadata;
-            }
-        }
-
-        public class CreateStreamCompleted : WriteResponseMessage
-        {
-            public readonly Guid CorrelationId;
-            public readonly OperationResult Result;
-            public readonly string Message;
-
-            public CreateStreamCompleted(Guid correlationId, OperationResult result, string message)
-            {
-                CorrelationId = correlationId;
-                Result = result;
-                Message = message;
+                Reason = reason;
+                AdditionalInfo = additionalInfo;
             }
         }
 
         public class WriteEvents : WriteRequestMessage
         {
-            public readonly Guid CorrelationId;
-            public readonly IEnvelope Envelope;
-            public readonly bool AllowForwarding;
+            private static readonly int TypeId = System.Threading.Interlocked.Increment(ref NextMsgId);
+            public override int MsgTypeId { get { return TypeId; } }
 
             public readonly string EventStreamId;
             public readonly int ExpectedVersion;
             public readonly Event[] Events;
 
-            public WriteEvents(Guid correlationId, IEnvelope envelope, bool allowForwarding, string eventStreamId, int expectedVersion, Event[] events)
+            public WriteEvents(Guid internalCorrId, Guid correlationId, IEnvelope envelope, bool requireMaster, 
+                               string eventStreamId, int expectedVersion, Event[] events,
+                               IPrincipal user, string login = null, string password = null)
+                : base(internalCorrId, correlationId, envelope, requireMaster, user, login, password)
             {
-                Ensure.NotNull(envelope, "envelope");
-                Ensure.NotNull(eventStreamId, "eventStreamId");
+                Ensure.NotNullOrEmpty(eventStreamId, "eventStreamId");
+                if (expectedVersion < Data.ExpectedVersion.Any) throw new ArgumentOutOfRangeException("expectedVersion");
                 Ensure.NotNull(events, "events");
-                Ensure.Positive(events.Length, "events.Length");
-
-                CorrelationId = correlationId == Guid.Empty ? Guid.NewGuid() : correlationId;
-                Envelope = envelope;
-                AllowForwarding = allowForwarding;
 
                 EventStreamId = eventStreamId;
                 ExpectedVersion = expectedVersion;
                 Events = events;
             }
 
-            public WriteEvents(Guid correlationId, IEnvelope envelope, bool allowForwarding, string eventStreamId, int expectedVersion, Event @event)
-                : this(correlationId, envelope, allowForwarding, eventStreamId, expectedVersion, new[]{@event})
+            public WriteEvents(Guid internalCorrId, Guid correlationId, IEnvelope envelope, bool requireMaster,
+                               string eventStreamId, int expectedVersion, Event @event,
+                               IPrincipal user, string login = null, string password = null)
+                : this(internalCorrId, correlationId, envelope, requireMaster, eventStreamId, expectedVersion,
+                       @event == null ? null : new[] { @event }, user, login, password)
             {
             }
 
             public override string ToString()
             {
-                return string.Format("WRITE: CorrelationId: {0}, EventStreamId: {1}, ExpectedVersion: {2}, Events: {3}", CorrelationId, EventStreamId, ExpectedVersion, Events.Length);
+                return string.Format("WRITE: InternalCorrId: {0}, CorrelationId: {1}, EventStreamId: {2}, ExpectedVersion: {3}, Events: {4}",
+                                     InternalCorrId, CorrelationId, EventStreamId, ExpectedVersion, Events.Length);
             }
         }
 
-        public class WriteEventsCompleted : WriteResponseMessage
+        public class WriteEventsCompleted : Message
         {
+            private static readonly int TypeId = System.Threading.Interlocked.Increment(ref NextMsgId);
+            public override int MsgTypeId { get { return TypeId; } }
+
             public readonly Guid CorrelationId;
             public readonly OperationResult Result;
             public readonly string Message;
@@ -206,29 +230,53 @@ namespace EventStore.Core.Messages
                 Message = message;
                 FirstEventNumber = EventNumber.Invalid;
             }
+
+            private WriteEventsCompleted(Guid correlationId, OperationResult result, string message, int firstEventNumber)
+            {
+                CorrelationId = correlationId;
+                Result = result;
+                Message = message;
+                FirstEventNumber = firstEventNumber;
+            }
+
+            public WriteEventsCompleted WithCorrelationId(Guid newCorrId)
+            {
+                return new WriteEventsCompleted(newCorrId, Result, Message, FirstEventNumber);
+            }
+
+            public override string ToString()
+            {
+                return string.Format("WRITE COMPLETED: CorrelationId: {0}, Result: {1}, Message: {2}, FirstEventNumber: {3}",
+                                     CorrelationId, Result, Message, FirstEventNumber);
+            }
         }
 
         public class TransactionStart : WriteRequestMessage
         {
-            public readonly Guid CorrelationId;
-            public readonly IEnvelope Envelope;
-            public readonly bool AllowForwarding;
+            private static readonly int TypeId = System.Threading.Interlocked.Increment(ref NextMsgId);
+            public override int MsgTypeId { get { return TypeId; } }
 
             public readonly string EventStreamId;
             public readonly int ExpectedVersion;
 
-            public TransactionStart(Guid correlationId, IEnvelope envelope, bool allowForwarding, string eventStreamId, int expectedVersion)
+            public TransactionStart(Guid internalCorrId, Guid correlationId, IEnvelope envelope, bool requireMaster,
+                                    string eventStreamId, int expectedVersion,
+                                    IPrincipal user, string login = null, string password = null)
+                : base(internalCorrId, correlationId, envelope, requireMaster, user, login, password)
             {
-                CorrelationId = correlationId == Guid.Empty ? Guid.NewGuid() : correlationId;
-                Envelope = envelope;
-                AllowForwarding = allowForwarding;
+                Ensure.NotNullOrEmpty(eventStreamId, "eventStreamId");
+                if (expectedVersion < Data.ExpectedVersion.Any) throw new ArgumentOutOfRangeException("expectedVersion");
+
                 EventStreamId = eventStreamId;
                 ExpectedVersion = expectedVersion;
             }
         }
 
-        public class TransactionStartCompleted : WriteResponseMessage
+        public class TransactionStartCompleted : Message
         {
+            private static readonly int TypeId = System.Threading.Interlocked.Increment(ref NextMsgId);
+            public override int MsgTypeId { get { return TypeId; } }
+
             public readonly Guid CorrelationId;
             public readonly long TransactionId;
             public readonly OperationResult Result;
@@ -241,29 +289,39 @@ namespace EventStore.Core.Messages
                 Result = result;
                 Message = message;
             }
+
+            public TransactionStartCompleted WithCorrelationId(Guid newCorrId)
+            {
+                return new TransactionStartCompleted(newCorrId, TransactionId, Result, Message);
+            }
         }
 
         public class TransactionWrite : WriteRequestMessage
         {
-            public readonly Guid CorrelationId;
-            public readonly IEnvelope Envelope;
-            public readonly bool AllowForwarding;
+            private static readonly int TypeId = System.Threading.Interlocked.Increment(ref NextMsgId);
+            public override int MsgTypeId { get { return TypeId; } }
 
             public readonly long TransactionId;
             public readonly Event[] Events;
 
-            public TransactionWrite(Guid correlationId, IEnvelope envelope, bool allowForwarding, long transactionId, Event[] events)
+            public TransactionWrite(Guid internalCorrId, Guid correlationId, IEnvelope envelope, bool requireMaster,
+                                    long transactionId, Event[] events,
+                                    IPrincipal user, string login = null, string password = null)
+                : base(internalCorrId, correlationId, envelope, requireMaster, user, login, password)
             {
-                CorrelationId = correlationId == Guid.Empty ? Guid.NewGuid() : correlationId;
-                Envelope = envelope;
-                AllowForwarding = allowForwarding;
+                Ensure.Nonnegative(transactionId, "transactionId");
+                Ensure.NotNull(events, "events");
+
                 TransactionId = transactionId;
                 Events = events;
             }
         }
 
-        public class TransactionWriteCompleted : WriteResponseMessage
+        public class TransactionWriteCompleted : Message
         {
+            private static readonly int TypeId = System.Threading.Interlocked.Increment(ref NextMsgId);
+            public override int MsgTypeId { get { return TypeId; } }
+
             public readonly Guid CorrelationId;
             public readonly long TransactionId;
             public readonly OperationResult Result;
@@ -276,27 +334,34 @@ namespace EventStore.Core.Messages
                 Result = result;
                 Message = message;
             }
+
+            public TransactionWriteCompleted WithCorrelationId(Guid newCorrId)
+            {
+                return new TransactionWriteCompleted(newCorrId, TransactionId, Result, Message);
+            }
         }
 
         public class TransactionCommit : WriteRequestMessage
         {
-            public readonly Guid CorrelationId;
-            public readonly IEnvelope Envelope;
-            public readonly bool AllowForwarding;
+            private static readonly int TypeId = System.Threading.Interlocked.Increment(ref NextMsgId);
+            public override int MsgTypeId { get { return TypeId; } }
 
             public readonly long TransactionId;
 
-            public TransactionCommit(Guid correlationId, IEnvelope envelope, bool allowForwarding, long transactionId)
+            public TransactionCommit(Guid internalCorrId, Guid correlationId, IEnvelope envelope, bool requireMaster,
+                                     long transactionId, IPrincipal user, string login = null, string password = null)
+                : base(internalCorrId, correlationId, envelope, requireMaster, user, login, password)
             {
-                CorrelationId = correlationId == Guid.Empty ? Guid.NewGuid() : correlationId;
-                Envelope = envelope;
-                AllowForwarding = allowForwarding;
+                Ensure.Nonnegative(transactionId, "transactionId");
                 TransactionId = transactionId;
             }
         }
 
-        public class TransactionCommitCompleted : WriteResponseMessage
+        public class TransactionCommitCompleted : Message
         {
+            private static readonly int TypeId = System.Threading.Interlocked.Increment(ref NextMsgId);
+            public override int MsgTypeId { get { return TypeId; } }
+
             public readonly Guid CorrelationId;
             public readonly long TransactionId;
             public readonly OperationResult Result;
@@ -309,32 +374,39 @@ namespace EventStore.Core.Messages
                 Result = result;
                 Message = message;
             }
+
+            public TransactionCommitCompleted WithCorrelationId(Guid newCorrId)
+            {
+                return new TransactionCommitCompleted(newCorrId, TransactionId, Result, Message);
+            }
         }
 
         public class DeleteStream : WriteRequestMessage
         {
-            public readonly Guid CorrelationId;
-            public readonly IEnvelope Envelope;
-            public readonly bool AllowForwarding;
+            private static readonly int TypeId = System.Threading.Interlocked.Increment(ref NextMsgId);
+            public override int MsgTypeId { get { return TypeId; } }
 
             public readonly string EventStreamId;
             public readonly int ExpectedVersion;
 
-            public DeleteStream(Guid correlationId, IEnvelope envelope, bool allowForwarding, string eventStreamId, int expectedVersion)
+            public DeleteStream(Guid internalCorrId, Guid correlationId, IEnvelope envelope, bool requireMaster,
+                                string eventStreamId, int expectedVersion,
+                                IPrincipal user, string login = null, string password = null)
+                : base(internalCorrId, correlationId, envelope, requireMaster, user, login, password)
             {
-                Ensure.NotNull(envelope, "envelope");
-                Ensure.NotNull(eventStreamId, "eventStreamId");
+                Ensure.NotNullOrEmpty(eventStreamId, "eventStreamId");
+                if (expectedVersion < Data.ExpectedVersion.Any) throw new ArgumentOutOfRangeException("expectedVersion");
 
-                CorrelationId = correlationId == Guid.Empty ? Guid.NewGuid() : correlationId;
-                Envelope = envelope;
-                AllowForwarding = allowForwarding;
                 EventStreamId = eventStreamId;
                 ExpectedVersion = expectedVersion;
             }
         }
 
-        public class DeleteStreamCompleted : WriteResponseMessage
+        public class DeleteStreamCompleted : Message
         {
+            private static readonly int TypeId = System.Threading.Interlocked.Increment(ref NextMsgId);
+            public override int MsgTypeId { get { return TypeId; } }
+
             public readonly Guid CorrelationId;
             public readonly OperationResult Result;
             public readonly string Message;
@@ -345,35 +417,51 @@ namespace EventStore.Core.Messages
                 Result = result;
                 Message = message;
             }
+
+            public DeleteStreamCompleted WithCorrelationId(Guid newCorrId)
+            {
+                return new DeleteStreamCompleted(newCorrId, Result, Message);
+            }
         }
 
         public class ReadEvent : ReadRequestMessage
         {
-            public readonly Guid CorrelationId;
-            public readonly IEnvelope Envelope;
+            private static readonly int TypeId = System.Threading.Interlocked.Increment(ref NextMsgId);
+            public override int MsgTypeId { get { return TypeId; } }
 
             public readonly string EventStreamId;
             public readonly int EventNumber;
             public readonly bool ResolveLinkTos;
+            public readonly bool RequireMaster;
 
-            public ReadEvent(Guid correlationId, IEnvelope envelope, string eventStreamId, int eventNumber, bool resolveLinkTos)
+            public ReadEvent(Guid internalCorrId, Guid correlationId, IEnvelope envelope, string eventStreamId, int eventNumber,
+                             bool resolveLinkTos, bool requireMaster, IPrincipal user)
+                : base(internalCorrId, correlationId, envelope, user)
             {
-                CorrelationId = correlationId == Guid.Empty ? Guid.NewGuid() : correlationId;
-                Envelope = envelope;
+                Ensure.NotNullOrEmpty(eventStreamId, "eventStreamId");
+                if (eventNumber < -1) throw new ArgumentOutOfRangeException("eventNumber");
+
                 EventStreamId = eventStreamId;
                 EventNumber = eventNumber;
                 ResolveLinkTos = resolveLinkTos;
+                RequireMaster = requireMaster;
             }
         }
 
         public class ReadEventCompleted : ReadResponseMessage
         {
+            private static readonly int TypeId = System.Threading.Interlocked.Increment(ref NextMsgId);
+            public override int MsgTypeId { get { return TypeId; } }
+
             public readonly Guid CorrelationId;
             public readonly string EventStreamId;
             public readonly ReadEventResult Result;
             public readonly ResolvedEvent Record;
+            public readonly StreamMetadata StreamMetadata;
+            public readonly string Error;
 
-            public ReadEventCompleted(Guid correlationId, string eventStreamId, ReadEventResult result, ResolvedEvent record)
+            public ReadEventCompleted(Guid correlationId, string eventStreamId, ReadEventResult result,
+                                      ResolvedEvent record, StreamMetadata streamMetadata, string error)
             {
                 Ensure.NotNullOrEmpty(eventStreamId, "eventStreamId");
                 if (result == ReadEventResult.Success)
@@ -383,62 +471,54 @@ namespace EventStore.Core.Messages
                 EventStreamId = eventStreamId;
                 Result = result;
                 Record = record;
+                StreamMetadata = streamMetadata;
+                Error = error;
             }
         }
 
         public class ReadStreamEventsForward : ReadRequestMessage
         {
-            public readonly Guid CorrelationId;
-            public readonly IEnvelope Envelope;
+            private static readonly int TypeId = System.Threading.Interlocked.Increment(ref NextMsgId);
+            public override int MsgTypeId { get { return TypeId; } }
+
             public readonly string EventStreamId;
             public readonly int FromEventNumber;
             public readonly int MaxCount;
-            public readonly bool ResolveLinks;
+            public readonly bool ResolveLinkTos;
+            public readonly bool RequireMaster;
 
             public readonly int? ValidationStreamVersion;
 
-            public ReadStreamEventsForward(Guid correlationId,
-                                           IEnvelope envelope,
-                                           string eventStreamId,
-                                           int fromEventNumber,
-                                           int maxCount,
-                                           bool resolveLinks)
-                : this(correlationId, envelope, eventStreamId, fromEventNumber, maxCount, resolveLinks, null)
+            public ReadStreamEventsForward(Guid internalCorrId, Guid correlationId, IEnvelope envelope,
+                                           string eventStreamId, int fromEventNumber, int maxCount, bool resolveLinkTos,
+                                           bool requireMaster, int? validationStreamVersion, IPrincipal user)
+                : base(internalCorrId, correlationId, envelope, user)
             {
-                
-            }
+                Ensure.NotNullOrEmpty(eventStreamId, "eventStreamId");
+                if (fromEventNumber < -1) throw new ArgumentOutOfRangeException("fromEventNumber");
 
-            public ReadStreamEventsForward(Guid correlationId,
-                                           IEnvelope envelope,
-                                           string eventStreamId,
-                                           int fromEventNumber,
-                                           int maxCount,
-                                           bool resolveLinks,
-                                           int? validationStreamVersion)
-            {
-                CorrelationId = correlationId == Guid.Empty ? Guid.NewGuid() : correlationId;
-                Envelope = envelope;
                 EventStreamId = eventStreamId;
                 FromEventNumber = fromEventNumber;
                 MaxCount = maxCount;
-                ResolveLinks = resolveLinks;
+                ResolveLinkTos = resolveLinkTos;
+                RequireMaster = requireMaster;
                 ValidationStreamVersion = validationStreamVersion;
             }
 
             public override string ToString()
             {
-                return string.Format(GetType().Name + " CorrelationId: {0}, EventStreamId: {1}, FromEventNumber: {2}, MaxCount: {3}, ResolveLinks: {4}, ValidationStreamVersion: {5}",
-                                     CorrelationId,
-                                     EventStreamId,
-                                     FromEventNumber,
-                                     MaxCount,
-                                     ResolveLinks,
-                                     ValidationStreamVersion);
+                return string.Format(GetType().Name + " InternalCorrId: {0}, CorrelationId: {1}, EventStreamId: {2}, "
+                                     + "FromEventNumber: {3}, MaxCount: {4}, ResolveLinkTos: {5}, RequireMaster: {6}, ValidationStreamVersion: {7}",
+                                     InternalCorrId, CorrelationId, EventStreamId,
+                                     FromEventNumber, MaxCount, ResolveLinkTos, RequireMaster, ValidationStreamVersion);
             }
         }
 
         public class ReadStreamEventsForwardCompleted : ReadResponseMessage
         {
+            private static readonly int TypeId = System.Threading.Interlocked.Increment(ref NextMsgId);
+            public override int MsgTypeId { get { return TypeId; } }
+
             public readonly Guid CorrelationId;
             public readonly string EventStreamId;
             public readonly int FromEventNumber;
@@ -446,22 +526,16 @@ namespace EventStore.Core.Messages
             
             public readonly ReadStreamResult Result;
             public readonly ResolvedEvent[] Events;
-            public readonly string Message;
+            public readonly StreamMetadata StreamMetadata;
+            public readonly string Error;
             public readonly int NextEventNumber;
             public readonly int LastEventNumber;
             public readonly bool IsEndOfStream;
             public readonly long LastCommitPosition;
 
-            public ReadStreamEventsForwardCompleted(Guid correlationId,
-                                                    string eventStreamId,
-                                                    int fromEventNumber,
-                                                    int maxCount,
-                                                    ReadStreamResult result,
-                                                    ResolvedEvent[] events,
-                                                    string message,
-                                                    int nextEventNumber,
-                                                    int lastEventNumber,
-                                                    bool isEndOfStream,
+            public ReadStreamEventsForwardCompleted(Guid correlationId, string eventStreamId, int fromEventNumber, int maxCount,
+                                                    ReadStreamResult result, ResolvedEvent[] events, StreamMetadata streamMetadata,
+                                                    string error, int nextEventNumber, int lastEventNumber, bool isEndOfStream,
                                                     long lastCommitPosition)
             {
                 Ensure.NotNull(events, "events");
@@ -480,65 +554,66 @@ namespace EventStore.Core.Messages
 
                 Result = result;
                 Events = events;
-                Message = message;
+                StreamMetadata = streamMetadata;
+                Error = error;
                 NextEventNumber = nextEventNumber;
                 LastEventNumber = lastEventNumber;
                 IsEndOfStream = isEndOfStream;
                 LastCommitPosition = lastCommitPosition;
             }
 
-            public static ReadStreamEventsForwardCompleted NotModified(Guid correlationId, string eventStreamId, 
-                                                                       int fromEventNumber, int maxCount, long lastCommitPosition)
+            public static ReadStreamEventsForwardCompleted NoData(ReadStreamResult result, Guid correlationId,  string eventStreamId,
+                                                                  int fromEventNumber, int maxCount, long lastCommitPosition, string message = null)
             {
                 return new ReadStreamEventsForwardCompleted(correlationId, eventStreamId, fromEventNumber, maxCount, 
-                                                            ReadStreamResult.NotModified, EmptyRecords, string.Empty, -1, -1, true, lastCommitPosition);
-            }
-
-            public static ReadStreamEventsForwardCompleted Faulted(Guid correlationId, string eventStreamId, int fromEventNumber, int maxCount, 
-                                                                   string message, long lastCommitPosition)
-            {
-                Ensure.NotNullOrEmpty(message, "message");
-                return new ReadStreamEventsForwardCompleted(correlationId, eventStreamId, fromEventNumber, maxCount,
-                                                            ReadStreamResult.Error, EmptyRecords, message, -1, -1, true, lastCommitPosition);
+                                                            result, EmptyRecords, null, message ?? string.Empty, 
+                                                            -1, -1, true, lastCommitPosition);
             }
         }
 
         public class ReadStreamEventsBackward : ReadRequestMessage
         {
-            public readonly Guid CorrelationId;
-            public readonly IEnvelope Envelope;
+            private static readonly int TypeId = System.Threading.Interlocked.Increment(ref NextMsgId);
+            public override int MsgTypeId { get { return TypeId; } }
+
             public readonly string EventStreamId;
             public readonly int FromEventNumber;
             public readonly int MaxCount;
-            public readonly bool ResolveLinks;
+            public readonly bool ResolveLinkTos;
+            public readonly bool RequireMaster;
 
             public readonly int? ValidationStreamVersion;
 
-            public ReadStreamEventsBackward(Guid correlationId,
-                                            IEnvelope envelope,
-                                            string eventStreamId,
-                                            int fromEventNumber,
-                                            int maxCount,
-                                            bool resolveLinks,
-                                            int? validationStreamVersion)
+            public ReadStreamEventsBackward(Guid internalCorrId, Guid correlationId, IEnvelope envelope,
+                                            string eventStreamId, int fromEventNumber, int maxCount, bool resolveLinkTos,
+                                            bool requireMaster, int? validationStreamVersion, IPrincipal user)
+                : base(internalCorrId, correlationId, envelope, user)
             {
-                CorrelationId = correlationId == Guid.Empty ? Guid.NewGuid() : correlationId;
-                Envelope = envelope;
+                Ensure.NotNullOrEmpty(eventStreamId, "eventStreamId");
+                if (fromEventNumber < -1) throw new ArgumentOutOfRangeException("fromEventNumber");
+
                 EventStreamId = eventStreamId;
                 FromEventNumber = fromEventNumber;
                 MaxCount = maxCount;
-                ResolveLinks = resolveLinks;
+                ResolveLinkTos = resolveLinkTos;
+                RequireMaster = requireMaster;
                 ValidationStreamVersion = validationStreamVersion;
             }
 
             public override string ToString()
             {
-                return string.Format(GetType().Name + " CorrelationId: {0}, EventStreamId: {1}, FromEventNumber: {2}, MaxCount: {3}, ResolveLinks: {4}, ValidationStreamVersion: {5}", CorrelationId, EventStreamId, FromEventNumber, MaxCount, ResolveLinks, ValidationStreamVersion);
+                return string.Format(GetType().Name + " InternalCorrId: {0}, CorrelationId: {1}, EventStreamId: {2}, "
+                                     + "FromEventNumber: {3}, MaxCount: {4}, ResolveLinkTos: {5}, RequireMaster: {6}, ValidationStreamVersion: {7}",
+                                     InternalCorrId, CorrelationId, EventStreamId, FromEventNumber, MaxCount,
+                                     ResolveLinkTos, RequireMaster, ValidationStreamVersion);
             }
         }
 
         public class ReadStreamEventsBackwardCompleted : ReadResponseMessage
         {
+            private static readonly int TypeId = System.Threading.Interlocked.Increment(ref NextMsgId);
+            public override int MsgTypeId { get { return TypeId; } }
+
             public readonly Guid CorrelationId;
             public readonly string EventStreamId;
             public readonly int FromEventNumber;
@@ -546,7 +621,8 @@ namespace EventStore.Core.Messages
 
             public readonly ReadStreamResult Result;
             public readonly ResolvedEvent[] Events;
-            public readonly string Message;
+            public readonly StreamMetadata StreamMetadata;
+            public readonly string Error;
             public readonly int NextEventNumber;
             public readonly int LastEventNumber;
             public readonly bool IsEndOfStream;
@@ -558,7 +634,8 @@ namespace EventStore.Core.Messages
                                                      int maxCount,
                                                      ReadStreamResult result,
                                                      ResolvedEvent[] events,
-                                                     string message,
+                                                     StreamMetadata streamMetadata,
+                                                     string error,
                                                      int nextEventNumber,
                                                      int lastEventNumber,
                                                      bool isEndOfStream,
@@ -580,128 +657,170 @@ namespace EventStore.Core.Messages
 
                 Result = result;
                 Events = events;
-                Message = message;
+                StreamMetadata = streamMetadata;
+                Error = error;
                 NextEventNumber = nextEventNumber;
                 LastEventNumber = lastEventNumber;
                 IsEndOfStream = isEndOfStream;
                 LastCommitPosition = lastCommitPosition;
             }
 
-            public static ReadStreamEventsBackwardCompleted NotModified(Guid correlationId, string eventStreamId, 
-                                                                        int fromEventNumber, int maxCount, long lastCommitPosition)
+            public static ReadStreamEventsBackwardCompleted NoData(ReadStreamResult result, Guid correlationId, string eventStreamId,
+                                                                   int fromEventNumber, int maxCount, long lastCommitPosition, string message = null)
             {
                 return new ReadStreamEventsBackwardCompleted(correlationId, eventStreamId, fromEventNumber, maxCount,
-                                                             ReadStreamResult.NotModified, EmptyRecords, string.Empty, -1, -1, true, lastCommitPosition);
-            }
-
-            public static ReadStreamEventsBackwardCompleted Faulted(Guid correlationId, string eventStreamId, int fromEventNumber, 
-                                                                    int maxCount, string message, long lastCommitPosition)
-            {
-                Ensure.NotNullOrEmpty(message, "message");
-                return new ReadStreamEventsBackwardCompleted(correlationId, eventStreamId, fromEventNumber, maxCount,
-                                                             ReadStreamResult.Error, EmptyRecords, message, -1, -1, true, lastCommitPosition);
+                                                             result, EmptyRecords, null, message ?? string.Empty,
+                                                             -1, -1, true, lastCommitPosition);
             }
         }
 
         public class ReadAllEventsForward : ReadRequestMessage
         {
-            public readonly Guid CorrelationId;
-            public readonly IEnvelope Envelope;
+            private static readonly int TypeId = System.Threading.Interlocked.Increment(ref NextMsgId);
+            public override int MsgTypeId { get { return TypeId; } }
+
             public readonly long CommitPosition;
             public readonly long PreparePosition;
             public readonly int MaxCount;
-            public readonly bool ResolveLinks;
+            public readonly bool ResolveLinkTos;
+            public readonly bool RequireMaster;
 
             public readonly long? ValidationTfEofPosition;
 
-            public ReadAllEventsForward(Guid correlationId,
-                                        IEnvelope envelope,
-                                        long commitPosition,
-                                        long preparePosition,
-                                        int maxCount,
-                                        bool resolveLinks,
-                                        long? validationTfEofPosition)
+            public ReadAllEventsForward(Guid internalCorrId, Guid correlationId, IEnvelope envelope,
+                                        long commitPosition, long preparePosition, int maxCount, bool resolveLinkTos,
+                                        bool requireMaster, long? validationTfEofPosition, IPrincipal user)
+                : base(internalCorrId, correlationId, envelope, user)
             {
-                CorrelationId = correlationId == Guid.Empty ? Guid.NewGuid() : correlationId;
-                Envelope = envelope;
                 CommitPosition = commitPosition;
                 PreparePosition = preparePosition;
                 MaxCount = maxCount;
-                ResolveLinks = resolveLinks;
-
+                ResolveLinkTos = resolveLinkTos;
+                RequireMaster = requireMaster;
                 ValidationTfEofPosition = validationTfEofPosition;
             }
         }
 
         public class ReadAllEventsForwardCompleted : ReadResponseMessage
         {
-            public readonly Guid CorrelationId;
-            public readonly ReadAllResult Result;
-            public readonly bool NotModified;
+            private static readonly int TypeId = System.Threading.Interlocked.Increment(ref NextMsgId);
+            public override int MsgTypeId { get { return TypeId; } }
 
-            public ReadAllEventsForwardCompleted(Guid correlationId, ReadAllResult result, bool notModified)
+            public readonly Guid CorrelationId;
+
+            public readonly ReadAllResult Result;
+            public readonly string Error;
+
+            public readonly ResolvedEvent[] Events;
+            public readonly StreamMetadata StreamMetadata;
+            public readonly int MaxCount;
+            public readonly TFPos CurrentPos;
+            public readonly TFPos NextPos;
+            public readonly TFPos PrevPos;
+            public readonly long TfEofPosition;
+
+            public bool IsEndOfStream { get { return Events == null || Events.Length < MaxCount; } }
+
+            public ReadAllEventsForwardCompleted(Guid correlationId, ReadAllResult result, string error, ResolvedEvent[] events,
+                                                 StreamMetadata streamMetadata, int maxCount,
+                                                 TFPos currentPos, TFPos nextPos, TFPos prevPos, long tfEofPosition)
             {
+                Ensure.NotNull(events, "events");
+
                 CorrelationId = correlationId;
-                NotModified = notModified;
                 Result = result;
+                Error = error;
+                Events = events;
+                StreamMetadata = streamMetadata;
+                MaxCount = maxCount;
+                CurrentPos = currentPos;
+                NextPos = nextPos;
+                PrevPos = prevPos;
+                TfEofPosition = tfEofPosition;
             }
         }
 
         public class ReadAllEventsBackward : ReadRequestMessage
         {
-            public readonly Guid CorrelationId;
-            public readonly IEnvelope Envelope;
+            private static readonly int TypeId = System.Threading.Interlocked.Increment(ref NextMsgId);
+            public override int MsgTypeId { get { return TypeId; } }
+
             public readonly long CommitPosition;
             public readonly long PreparePosition;
             public readonly int MaxCount;
-            public readonly bool ResolveLinks;
+            public readonly bool ResolveLinkTos;
+            public readonly bool RequireMaster;
 
             public readonly long? ValidationTfEofPosition;
 
-            public ReadAllEventsBackward(Guid correlationId,
-                                         IEnvelope envelope,
-                                         long commitPosition,
-                                         long preparePosition,
-                                         int maxCount,
-                                         bool resolveLinks,
-                                         long? validationTfEofPosition)
+            public ReadAllEventsBackward(Guid internalCorrId, Guid correlationId, IEnvelope envelope,
+                                         long commitPosition, long preparePosition, int maxCount, bool resolveLinkTos,
+                                         bool requireMaster, long? validationTfEofPosition, IPrincipal user)
+                : base(internalCorrId, correlationId, envelope, user)
             {
-                CorrelationId = correlationId == Guid.Empty ? Guid.NewGuid() : correlationId;
-                Envelope = envelope;
                 CommitPosition = commitPosition;
                 PreparePosition = preparePosition;
                 MaxCount = maxCount;
-                ResolveLinks = resolveLinks;
-
+                ResolveLinkTos = resolveLinkTos;
+                RequireMaster = requireMaster;
                 ValidationTfEofPosition = validationTfEofPosition;
             }
         }
 
         public class ReadAllEventsBackwardCompleted : ReadResponseMessage
         {
-            public readonly Guid CorrelationId;
-            public readonly ReadAllResult Result;
-            public readonly bool NotModified;
+            private static readonly int TypeId = System.Threading.Interlocked.Increment(ref NextMsgId);
+            public override int MsgTypeId { get { return TypeId; } }
 
-            public ReadAllEventsBackwardCompleted(Guid correlationId, ReadAllResult result, bool notModified)
+            public readonly Guid CorrelationId;
+
+            public readonly ReadAllResult Result;
+            public readonly string Error;
+
+            public readonly ResolvedEvent[] Events;
+            public readonly StreamMetadata StreamMetadata;
+            public readonly int MaxCount;
+            public readonly TFPos CurrentPos;
+            public readonly TFPos NextPos;
+            public readonly TFPos PrevPos;
+            public readonly long TfEofPosition;
+
+            public bool IsEndOfStream { get { return Events == null || Events.Length < MaxCount; } }
+
+            public ReadAllEventsBackwardCompleted(Guid correlationId, ReadAllResult result, string error, ResolvedEvent[] events, 
+                                                  StreamMetadata streamMetadata, int maxCount,
+                                                  TFPos currentPos, TFPos nextPos, TFPos prevPos, long tfEofPosition)
             {
+                Ensure.NotNull(events, "events");
+
                 CorrelationId = correlationId;
-                NotModified = notModified;
                 Result = result;
+                Error = error;
+                Events = events;
+                StreamMetadata = streamMetadata;
+                MaxCount = maxCount;
+                CurrentPos = currentPos;
+                NextPos = nextPos;
+                PrevPos = prevPos;
+                TfEofPosition = tfEofPosition;
             }
         }
 
         public class SubscribeToStream : ReadRequestMessage
         {
-            public readonly TcpConnectionManager Connection;
-            public readonly Guid CorrelationId;
+            private static readonly int TypeId = System.Threading.Interlocked.Increment(ref NextMsgId);
+            public override int MsgTypeId { get { return TypeId; } }
+
+            public readonly Guid ConnectionId;
             public readonly string EventStreamId; // should be empty to subscribe to all
             public readonly bool ResolveLinkTos;
 
-            public SubscribeToStream(TcpConnectionManager connection, Guid correlationId, string eventStreamId, bool resolveLinkTos)
+            public SubscribeToStream(Guid internalCorrId, Guid correlationId, IEnvelope envelope, Guid connectionId,
+                                     string eventStreamId, bool resolveLinkTos, IPrincipal user)
+                : base(internalCorrId, correlationId, envelope, user)
             {
-                Connection = connection;
-                CorrelationId = correlationId;
+                Ensure.NotEmptyGuid(connectionId, "connectionId");
+                ConnectionId = connectionId;
                 EventStreamId = eventStreamId;
                 ResolveLinkTos = resolveLinkTos;
             }
@@ -709,16 +828,20 @@ namespace EventStore.Core.Messages
 
         public class UnsubscribeFromStream : ReadRequestMessage
         {
-            public readonly Guid CorrelationId;
+            private static readonly int TypeId = System.Threading.Interlocked.Increment(ref NextMsgId);
+            public override int MsgTypeId { get { return TypeId; } }
 
-            public UnsubscribeFromStream(Guid correlationId)
+            public UnsubscribeFromStream(Guid internalCorrId, Guid correlationId, IEnvelope envelope, IPrincipal user)
+                : base(internalCorrId, correlationId, envelope, user)
             {
-                CorrelationId = correlationId;
             }
         }
 
         public class SubscriptionConfirmation : Message
         {
+            private static readonly int TypeId = System.Threading.Interlocked.Increment(ref NextMsgId);
+            public override int MsgTypeId { get { return TypeId; } }
+
             public readonly Guid CorrelationId;
             public readonly long LastCommitPosition;
             public readonly int? LastEventNumber;
@@ -733,6 +856,9 @@ namespace EventStore.Core.Messages
 
         public class StreamEventAppeared : Message
         {
+            private static readonly int TypeId = System.Threading.Interlocked.Increment(ref NextMsgId);
+            public override int MsgTypeId { get { return TypeId; } }
+
             public readonly Guid CorrelationId;
             public readonly ResolvedEvent Event;
 
@@ -745,11 +871,16 @@ namespace EventStore.Core.Messages
 
         public class SubscriptionDropped: Message
         {
-            public readonly Guid CorrelationId;
+            private static readonly int TypeId = System.Threading.Interlocked.Increment(ref NextMsgId);
+            public override int MsgTypeId { get { return TypeId; } }
 
-            public SubscriptionDropped(Guid correlationId)
+            public readonly Guid CorrelationId;
+            public readonly SubscriptionDropReason Reason;
+
+            public SubscriptionDropped(Guid correlationId, SubscriptionDropReason reason)
             {
                 CorrelationId = correlationId;
+                Reason = reason;
             }
         }
     }

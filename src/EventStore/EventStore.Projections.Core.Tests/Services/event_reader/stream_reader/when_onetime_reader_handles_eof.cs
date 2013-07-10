@@ -46,7 +46,7 @@ namespace EventStore.Projections.Core.Tests.Services.event_reader.stream_reader
     public class when_onetime_reader_handles_eof : TestFixtureWithExistingEvents
     {
         private StreamEventReader _edp;
-        private Guid _publishWithCorrelationId;
+        //private Guid _publishWithCorrelationId;
         private Guid _distibutionPointCorrelationId;
         private Guid _firstEventId;
         private Guid _secondEventId;
@@ -58,13 +58,13 @@ namespace EventStore.Projections.Core.Tests.Services.event_reader.stream_reader
         }
 
         [SetUp]
-        public void When()
+        public new void When()
         {
-            _publishWithCorrelationId = Guid.NewGuid();
+            //_publishWithCorrelationId = Guid.NewGuid();
             _distibutionPointCorrelationId = Guid.NewGuid();
             _fakeTimeProvider = new FakeTimeProvider();
             _edp = new StreamEventReader(
-                _bus, _distibutionPointCorrelationId, "stream", 10, _fakeTimeProvider, resolveLinkTos: false,
+                _bus, _distibutionPointCorrelationId, null, "stream", 10, _fakeTimeProvider, resolveLinkTos: false,
                 stopOnEof: true);
             _edp.Resume();
             _firstEventId = Guid.NewGuid();
@@ -85,17 +85,17 @@ namespace EventStore.Projections.Core.Tests.Services.event_reader.stream_reader
                             DateTime.UtcNow,
                             PrepareFlags.SingleWrite | PrepareFlags.TransactionBegin | PrepareFlags.TransactionEnd,
                             "event_type2", new byte[] {3}, new byte[] {4}), null)
-                        }, "", 12, 11, true, 200));
+                        }, null, "", 12, 11, true, 200));
             _edp.Handle(
                 new ClientMessage.ReadStreamEventsForwardCompleted(
-                    _distibutionPointCorrelationId, "stream", 100, 100, ReadStreamResult.Success, new ResolvedEvent[] { }, "", 12, 11, true, 400));
+                    _distibutionPointCorrelationId, "stream", 100, 100, ReadStreamResult.Success, new ResolvedEvent[] { }, null, "", 12, 11, true, 400));
         }
 
         [Test]
         public void publishes_eof_message()
         {
-            Assert.AreEqual(1, _consumer.HandledMessages.OfType<ProjectionCoreServiceMessage.EventReaderEof>().Count());
-            var first = _consumer.HandledMessages.OfType<ProjectionCoreServiceMessage.EventReaderEof>().First();
+            Assert.AreEqual(1, _consumer.HandledMessages.OfType<ReaderSubscriptionMessage.EventReaderEof>().Count());
+            var first = _consumer.HandledMessages.OfType<ReaderSubscriptionMessage.EventReaderEof>().First();
             Assert.AreEqual(first.CorrelationId, _distibutionPointCorrelationId);
         }
 

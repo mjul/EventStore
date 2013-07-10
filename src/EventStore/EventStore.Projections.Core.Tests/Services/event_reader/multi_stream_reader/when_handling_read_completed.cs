@@ -61,14 +61,15 @@ namespace EventStore.Projections.Core.Tests.Services.event_reader.multi_stream_r
         private Dictionary<string, int> _ab12Tag;
 
         [SetUp]
-        public void When()
+        public new void When()
         {
             _ab12Tag = new Dictionary<string, int> { { "a", 1 }, { "b", 2 } };
             _abStreams = new[] { "a", "b" };
 
             _publishWithCorrelationId = Guid.NewGuid();
             _distibutionPointCorrelationId = Guid.NewGuid();
-            _edp = new MultiStreamEventReader(_bus, _distibutionPointCorrelationId, _abStreams, _ab12Tag, false, new RealTimeProvider());
+            _edp = new MultiStreamEventReader(
+                _bus, _distibutionPointCorrelationId, null, _abStreams, _ab12Tag, false, new RealTimeProvider());
             _edp.Resume();
             _firstEventId = Guid.NewGuid();
             _secondEventId = Guid.NewGuid();
@@ -87,7 +88,7 @@ namespace EventStore.Projections.Core.Tests.Services.event_reader.multi_stream_r
                                 2, 100, Guid.NewGuid(), _secondEventId, 100, 0, "a", ExpectedVersion.Any, DateTime.UtcNow,
                                 PrepareFlags.SingleWrite | PrepareFlags.TransactionBegin | PrepareFlags.TransactionEnd,
                                 "event_type2", new byte[] {3}, new byte[] {4}), null)
-                    }, "", 3, 4, false, 200));
+                    }, null, "", 3, 4, false, 200));
         }
 
         [Test, ExpectedException(typeof (InvalidOperationException))]
@@ -106,7 +107,7 @@ namespace EventStore.Projections.Core.Tests.Services.event_reader.multi_stream_r
         public void does_not_publish_committed_event_received_messages()
         {
             Assert.AreEqual(
-                0, _consumer.HandledMessages.OfType<ProjectionCoreServiceMessage.CommittedEventDistributed>().Count());
+                0, _consumer.HandledMessages.OfType<ReaderSubscriptionMessage.CommittedEventDistributed>().Count());
         }
 
         [Test]
@@ -134,7 +135,7 @@ namespace EventStore.Projections.Core.Tests.Services.event_reader.multi_stream_r
                         2, 50, Guid.NewGuid(), Guid.NewGuid(), 50, 0, "a", ExpectedVersion.Any, DateTime.UtcNow,
                         PrepareFlags.SingleWrite | PrepareFlags.TransactionBegin | PrepareFlags.TransactionEnd,
                         "event_type", new byte[0], new byte[0]), null)
-                    }, "", 3, 4, false, 100));
+                    }, null, "", 3, 4, false, 100));
         }
 
     }

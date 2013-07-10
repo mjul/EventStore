@@ -26,8 +26,8 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 // 
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.Linq;
 using System.Threading;
 using EventStore.Common.Log;
@@ -44,7 +44,7 @@ namespace EventStore.Core.Index
         public int Count { get { return _count; } }
         public Guid Id { get { return _id; } }
 
-        private readonly Dictionary<uint, SortedList<Tuple<int, long>, byte>> _hash;
+        private readonly ConcurrentDictionary<uint, SortedList<Tuple<int, long>, byte>> _hash;
         private readonly Guid _id = Guid.NewGuid();
         private int _count;
 
@@ -52,7 +52,7 @@ namespace EventStore.Core.Index
 
         public HashListMemTable(int maxSize)
         {
-            _hash = new Dictionary<uint, SortedList<Tuple<int, long>, byte>>(maxSize);
+            _hash = new ConcurrentDictionary<uint, SortedList<Tuple<int, long>, byte>>();
         }
 
         public bool MarkForConversion()
@@ -78,7 +78,7 @@ namespace EventStore.Core.Index
             if (!_hash.TryGetValue(stream, out list))
             {
                 list = new SortedList<Tuple<int, long>, byte>(MemTableComparer);
-                _hash.Add(stream, list);
+                _hash.AddOrUpdate(stream, list, (x, y) => { throw new Exception("This should never happen as MemTable updates are single-threaded."); });
             }
 
             if (!Monitor.TryEnter(list, 10000))
@@ -158,21 +158,21 @@ namespace EventStore.Core.Index
 
         public IEnumerable<IndexEntry> IterateAllInOrder()
         {
-            Log.Trace("Sorting array in HashListMemTable.IterateAllInOrder...");
+            //Log.Trace("Sorting array in HashListMemTable.IterateAllInOrder...");
 
-            var items = _hash.Keys.ToArray();
-            Array.Sort(items, new ReverseComparer<uint>());
+            var keys = _hash.Keys.ToArray();
+            Array.Sort(keys, new ReverseComparer<uint>());
             
-            foreach (var item in items)
+            foreach (var key in keys)
             {
-                var hash = _hash[item];
-                for (int i = hash.Count - 1; i >= 0; --i)
+                var list = _hash[key];
+                for (int i = list.Count - 1; i >= 0; --i)
                 {
-                    var x = hash.Keys[i];
-                    yield return new IndexEntry(item, x.Item1, x.Item2);
+                    var x = list.Keys[i];
+                    yield return new IndexEntry(key, x.Item1, x.Item2);
                 }
             }
-            Log.Trace("Sorting array in HashListMemTable.IterateAllInOrder... DONE!");
+            //Log.Trace("Sorting array in HashListMemTable.IterateAllInOrder... DONE!");
         }
 
         public void Clear()

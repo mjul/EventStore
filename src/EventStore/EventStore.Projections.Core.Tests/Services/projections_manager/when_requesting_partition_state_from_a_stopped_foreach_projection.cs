@@ -26,6 +26,8 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 // 
 
+using System;
+using System.Collections.Generic;
 using System.Linq;
 using EventStore.Core.Messages;
 using EventStore.Core.Messaging;
@@ -40,44 +42,49 @@ namespace EventStore.Projections.Core.Tests.Services.projections_manager
     {
         protected override void Given()
         {
-            ExistingEvent("$projections-$all", "ProjectionCreated", null, "test-projection");
+            NoStream("$projections-test-projection-order");
+            ExistingEvent("$projections-$all", "$ProjectionCreated", null, "test-projection");
             ExistingEvent(
-                "$projections-test-projection", "ProjectionUpdated", null,
+                "$projections-test-projection", "$ProjectionUpdated", null,
                 @"{""Query"":""fromCategory('test').foreachStream().when({'e': function(s,e){}})"", 
                     ""Mode"":""3"", ""Enabled"":false, ""HandlerType"":""JS"",
-                    ""SourceDefintion"":{
+                    ""SourceDefinition"":{
                         ""AllEvents"":true,
                         ""AllStreams"":false,
                         ""Streams"":[""$ce-test""]
                     }
                 }");    
-            ExistingEvent("$projections-test-projection-a-state", "StateUpdated", @"{""Streams"":{""$ce-test"": 9}}", @"{""data"":1}");
-            NoStream("$projections-test-projection-b-state");
-            ExistingEvent("$projections-test-projection-checkpoint", "ProjectionCheckpoint", @"{""Streams"":{""$ce-test"": 10}}", @"{}");
+            ExistingEvent("$projections-test-projection-a-checkpoint", "$Checkpoint", @"{""s"":{""$ce-test"": 9}}", @"{""data"":1}");
+            NoStream("$projections-test-projection-b-checkpoint");
+            ExistingEvent("$projections-test-projection-checkpoint", "$ProjectionCheckpoint", @"{""s"":{""$ce-test"": 10}}", @"{}");
             AllWritesSucceed();
         }
 
         private string _projectionName;
 
-        protected override void When()
+        protected override IEnumerable<WhenStep> When()
         {
             _projectionName = "test-projection";
             // when
-            _manager.Handle(new SystemMessage.BecomeWorking());
+            yield return (new SystemMessage.BecomeMaster(Guid.NewGuid()));
         }
 
         [Test]
         public void the_projection_state_can_be_retrieved()
         {
             _manager.Handle(new ProjectionManagementMessage.GetState(new PublishEnvelope(_bus), _projectionName, "a"));
-            _manager.Handle(new ProjectionManagementMessage.GetState(new PublishEnvelope(_bus), _projectionName, "b"));
-
-            Assert.AreEqual(2, _consumer.HandledMessages.OfType<ProjectionManagementMessage.ProjectionState>().Count());
+            _queue.Process();
+            
+            Assert.AreEqual(1, _consumer.HandledMessages.OfType<ProjectionManagementMessage.ProjectionState>().Count());
 
             var first = _consumer.HandledMessages.OfType<ProjectionManagementMessage.ProjectionState>().First();
             Assert.AreEqual(_projectionName, first.Name);
             Assert.AreEqual(@"{""data"":1}", first.State);
 
+            _manager.Handle(new ProjectionManagementMessage.GetState(new PublishEnvelope(_bus), _projectionName, "b"));
+            _queue.Process();
+
+            Assert.AreEqual(2, _consumer.HandledMessages.OfType<ProjectionManagementMessage.ProjectionState>().Count());
             var second = _consumer.HandledMessages.OfType<ProjectionManagementMessage.ProjectionState>().Skip(1).First();
             Assert.AreEqual(_projectionName, second.Name);
             Assert.AreEqual("", second.State);

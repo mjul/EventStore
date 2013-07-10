@@ -68,17 +68,27 @@ namespace EventStore.Projections.Core.Standard
         }
 
         public bool ProcessEvent(
-            string partition, CheckpointTag eventPosition, string streamId, string eventType, string category1, Guid eventId,
-            int sequenceNumber, string metadata, string data, out string newState, out EmittedEvent[] emittedEvents)
+            string partition, CheckpointTag eventPosition, string category1, ResolvedEvent data,
+            out string newState, out EmittedEvent[] emittedEvents)
         {
             emittedEvents = null;
             newState = null;
-            if (sequenceNumber != 0)
+            if (data.EventSequenceNumber != 0)
                 return false; // not our event
 
-            emittedEvents = new[] { new EmittedEvent(SystemStreams.StreamsStream, Guid.NewGuid(), SystemEventTypes.LinkTo, sequenceNumber + "@" + streamId, eventPosition, expectedTag: null) };
+            emittedEvents = new[]
+                {
+                    new EmittedDataEvent(
+                        SystemStreams.StreamsStream, Guid.NewGuid(), SystemEventTypes.LinkTo,
+                        data.EventSequenceNumber + "@" + data.EventStreamId, null, eventPosition, expectedTag: null)
+                };
 
             return true;
+        }
+
+        public string TransformStateToResult()
+        {
+            throw new NotImplementedException();
         }
 
         public void Dispose()

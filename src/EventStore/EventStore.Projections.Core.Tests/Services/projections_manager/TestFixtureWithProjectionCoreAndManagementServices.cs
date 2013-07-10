@@ -30,6 +30,7 @@ using EventStore.Core.Bus;
 using EventStore.Core.Messages;
 using EventStore.Core.TransactionLog.Checkpoint;
 using EventStore.Projections.Core.Messages;
+using EventStore.Projections.Core.Services;
 using EventStore.Projections.Core.Services.Management;
 using EventStore.Projections.Core.Services.Processing;
 using EventStore.Projections.Core.Tests.Services.core_projection;
@@ -41,21 +42,69 @@ namespace EventStore.Projections.Core.Tests.Services.projections_manager
     {
         protected ProjectionManager _manager;
         private ProjectionCoreService _coreService;
+        private EventReaderCoreService _readerService;
+        private bool _initializeSystemProjections;
+
+        protected override void Given1()
+        {
+            base.Given1();
+            _initializeSystemProjections = GivenInitializeSystemProjections();
+            if (!_initializeSystemProjections)
+            {
+                ExistingEvent("$projections-$all", "$ProjectionsInitialized", "", "");
+            }
+        }
+
+        protected virtual bool GivenInitializeSystemProjections()
+        {
+            return false;
+        }
 
         [SetUp]
-        public void setup()
+        public void Setup()
         {
-            //TODO: this became a n integration test - proper ProjectionCoreService and ProjectionManager testing is required instead
+            SetUpManualQueue();
+            //TODO: this became an integration test - proper ProjectionCoreService and ProjectionManager testing is required as well
             _bus.Subscribe(_consumer);
 
-            _manager = new ProjectionManager(_bus, _bus, new IPublisher[] {_bus});
-            _coreService = new ProjectionCoreService(_bus, _bus, 10, new InMemoryCheckpoint(1000));
+            _manager = new ProjectionManager(
+                GetInputQueue(), GetInputQueue(), new[] {GetInputQueue()}, _timeProvider, true,
+                _initializeSystemProjections);
+            ICheckpoint writerCheckpoint = new InMemoryCheckpoint(1000);
+            _readerService = new EventReaderCoreService(GetInputQueue(), 10, writerCheckpoint, runHeadingReader: true);
+            _subscriptionDispatcher =
+                new PublishSubscribeDispatcher
+                    <ReaderSubscriptionManagement.Subscribe,
+                        ReaderSubscriptionManagement.ReaderSubscriptionManagementMessage, EventReaderSubscriptionMessage
+                        >(GetInputQueue(), v => v.SubscriptionId, v => v.SubscriptionId);
+
+            _bus.Subscribe(_subscriptionDispatcher.CreateSubscriber<EventReaderSubscriptionMessage.CheckpointSuggested>());
+            _bus.Subscribe(_subscriptionDispatcher.CreateSubscriber<EventReaderSubscriptionMessage.CommittedEventReceived>());
+            _bus.Subscribe(_subscriptionDispatcher.CreateSubscriber<EventReaderSubscriptionMessage.EofReached>());
+            _bus.Subscribe(_subscriptionDispatcher.CreateSubscriber<EventReaderSubscriptionMessage.ProgressChanged>());
+            _bus.Subscribe(_subscriptionDispatcher.CreateSubscriber<EventReaderSubscriptionMessage.NotAuthorized>());
+
+            _coreService = new ProjectionCoreService(GetInputQueue(), GetInputQueue(), _subscriptionDispatcher, _timeProvider);
+            _bus.Subscribe<ProjectionManagementMessage.Internal.CleanupExpired>(_manager);
+            _bus.Subscribe<ProjectionManagementMessage.Internal.Deleted>(_manager);
             _bus.Subscribe<CoreProjectionManagementMessage.Started>(_manager);
             _bus.Subscribe<CoreProjectionManagementMessage.Stopped>(_manager);
             _bus.Subscribe<CoreProjectionManagementMessage.Prepared>(_manager);
             _bus.Subscribe<CoreProjectionManagementMessage.Faulted>(_manager);
             _bus.Subscribe<CoreProjectionManagementMessage.StateReport>(_manager);
+            _bus.Subscribe<CoreProjectionManagementMessage.ResultReport>(_manager);
             _bus.Subscribe<CoreProjectionManagementMessage.StatisticsReport>(_manager);
+            _bus.Subscribe<ProjectionManagementMessage.Post>(_manager);
+            _bus.Subscribe<ProjectionManagementMessage.UpdateQuery>(_manager);
+            _bus.Subscribe<ProjectionManagementMessage.GetQuery>(_manager);
+            _bus.Subscribe<ProjectionManagementMessage.Delete>(_manager);
+            _bus.Subscribe<ProjectionManagementMessage.GetStatistics>(_manager);
+            _bus.Subscribe<ProjectionManagementMessage.GetState>(_manager);
+            _bus.Subscribe<ProjectionManagementMessage.GetResult>(_manager);
+            _bus.Subscribe<ProjectionManagementMessage.Disable>(_manager);
+            _bus.Subscribe<ProjectionManagementMessage.Enable>(_manager);
+            _bus.Subscribe<ProjectionManagementMessage.SetRunAs>(_manager);
+            _bus.Subscribe<ProjectionManagementMessage.Reset>(_manager);
             _bus.Subscribe<ClientMessage.WriteEventsCompleted>(_manager);
             _bus.Subscribe<ClientMessage.ReadStreamEventsBackwardCompleted>(_manager);
             _bus.Subscribe<ClientMessage.WriteEventsCompleted>(_manager);
@@ -69,29 +118,33 @@ namespace EventStore.Projections.Core.Tests.Services.projections_manager
             _bus.Subscribe<CoreProjectionManagementMessage.Stop>(_coreService);
             _bus.Subscribe<CoreProjectionManagementMessage.Kill>(_coreService);
             _bus.Subscribe<CoreProjectionManagementMessage.GetState>(_coreService);
-            _bus.Subscribe<CoreProjectionManagementMessage.GetDebugState>(_coreService);
+            _bus.Subscribe<CoreProjectionManagementMessage.GetResult>(_coreService);
             _bus.Subscribe<CoreProjectionManagementMessage.UpdateStatistics>(_coreService);
+            _bus.Subscribe<CoreProjectionProcessingMessage.CheckpointCompleted>(_coreService);
+            _bus.Subscribe<CoreProjectionProcessingMessage.CheckpointLoaded>(_coreService);
+            _bus.Subscribe<CoreProjectionProcessingMessage.PrerecordedEventsLoaded>(_coreService);
+            _bus.Subscribe<CoreProjectionProcessingMessage.RestartRequested>(_coreService);
+            _bus.Subscribe<CoreProjectionProcessingMessage.Failed>(_coreService);
             _bus.Subscribe<ClientMessage.ReadStreamEventsBackwardCompleted>(_coreService);
             _bus.Subscribe<ClientMessage.WriteEventsCompleted>(_coreService);
-            _bus.Subscribe<ProjectionCoreServiceMessage.Start>(_coreService);
-            _bus.Subscribe<ProjectionCoreServiceMessage.Stop>(_coreService);
-            _bus.Subscribe<ProjectionCoreServiceMessage.Tick>(_coreService);
-            _bus.Subscribe<ProjectionCoreServiceMessage.CommittedEventDistributed>(_coreService);
-            _bus.Subscribe<ProjectionCoreServiceMessage.EventReaderEof>(_coreService);
-            _bus.Subscribe<ProjectionCoreServiceMessage.EventReaderIdle>(_coreService);
-            _bus.Subscribe<ProjectionSubscriptionManagement.Pause>(_coreService);
-            _bus.Subscribe<ProjectionSubscriptionManagement.Resume>(_coreService);
-            _bus.Subscribe<ProjectionSubscriptionManagement.Subscribe>(_coreService);
-            _bus.Subscribe<ProjectionSubscriptionManagement.Unsubscribe>(_coreService);
+            _bus.Subscribe<ProjectionCoreServiceMessage.StartCore>(_coreService);
+            _bus.Subscribe<ProjectionCoreServiceMessage.StopCore>(_coreService);
+            _bus.Subscribe<ReaderCoreServiceMessage.StartReader>(_readerService);
+            _bus.Subscribe<ReaderCoreServiceMessage.StopReader>(_readerService);
+            _bus.Subscribe<ProjectionCoreServiceMessage.CoreTick>(_coreService);
+            _bus.Subscribe<ReaderCoreServiceMessage.ReaderTick>(_readerService);
+            _bus.Subscribe<ReaderSubscriptionMessage.CommittedEventDistributed>(_readerService);
+            _bus.Subscribe<ReaderSubscriptionMessage.EventReaderEof>(_readerService);
+            _bus.Subscribe<ReaderSubscriptionMessage.EventReaderNotAuthorized>(_readerService);
+            _bus.Subscribe<ReaderSubscriptionMessage.EventReaderIdle>(_readerService);
+            _bus.Subscribe<ReaderSubscriptionManagement.Pause>(_readerService);
+            _bus.Subscribe<ReaderSubscriptionManagement.Resume>(_readerService);
+            _bus.Subscribe<ReaderSubscriptionManagement.Subscribe>(_readerService);
+            _bus.Subscribe<ReaderSubscriptionManagement.Unsubscribe>(_readerService);
             
             Given();
-            When();
+            WhenLoop();
         }
 
-        protected virtual void Given()
-        {
-        }
-
-        protected abstract void When();
     }
 }

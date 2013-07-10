@@ -67,10 +67,10 @@ namespace EventStore.TestClient.Commands
                     context,
                     connectionEstablished: conn =>
                     {
-                        context.Log.Info("[{0}]: Starting transaction...", conn.EffectiveEndPoint);
+                        context.Log.Info("[{0}, L{1}]: Starting transaction...", conn.RemoteEndPoint, conn.LocalEndPoint);
                         sw.Start();
                         
-                        var tranStart = new TcpClientMessageDto.TransactionStart(eventStreamId, expectedVersion, true);
+                        var tranStart = new TcpClientMessageDto.TransactionStart(eventStreamId, expectedVersion, false);
                         var package = new TcpPackage(TcpCommand.TransactionStart, Guid.NewGuid(), tranStart.Serialize());
                         conn.EnqueueSend(package.AsByteArray());
                     },
@@ -109,10 +109,10 @@ namespace EventStore.TestClient.Commands
                                                 new TcpClientMessageDto.NewEvent(Guid.NewGuid().ToByteArray() ,
                                                                                  "TakeSomeSpaceEvent",
                                                                                  false,
-                                                                                 Encoding.UTF8.GetBytes(Guid.NewGuid().ToString()),
-                                                                                 Encoding.UTF8.GetBytes(Guid.NewGuid().ToString()))
+                                                                                 Common.Utils.Helper.UTF8NoBom.GetBytes(Guid.NewGuid().ToString()),
+                                                                                 Common.Utils.Helper.UTF8NoBom.GetBytes(Guid.NewGuid().ToString()))
                                             },
-                                            true);
+                                            false);
                                         var package = new TcpPackage(TcpCommand.TransactionWrite, Guid.NewGuid(), writeDto.Serialize());
                                         conn.EnqueueSend(package.AsByteArray());
                                     }
@@ -143,7 +143,7 @@ namespace EventStore.TestClient.Commands
                                         context.Log.Info("Written all events. Committing...");
 
                                         stage = Stage.Committing;
-                                        var commitDto = new TcpClientMessageDto.TransactionCommit(transactionId, true);
+                                        var commitDto = new TcpClientMessageDto.TransactionCommit(transactionId, false);
                                         var package = new TcpPackage(TcpCommand.TransactionCommit, Guid.NewGuid(), commitDto.Serialize());
                                         conn.EnqueueSend(package.AsByteArray());
                                     }
@@ -183,14 +183,7 @@ namespace EventStore.TestClient.Commands
                         }
 
                     },
-                    connectionClosed: (connection, error) =>
-                    {
-                        if (error == SocketError.Success && stage == Stage.Done)
-                            context.Success();
-                        else
-                            context.Fail();
-                    });
-
+                    connectionClosed: (connection, error) => context.Fail(reason: "Connection was closed prematurely."));
             context.WaitForCompletion();
             return true;
         }
@@ -199,8 +192,7 @@ namespace EventStore.TestClient.Commands
         {
             AcquiringTransactionId,
             Writing,
-            Committing,
-            Done
+            Committing
         }
     }
 }

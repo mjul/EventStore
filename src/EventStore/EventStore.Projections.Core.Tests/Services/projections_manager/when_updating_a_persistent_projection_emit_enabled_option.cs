@@ -26,7 +26,10 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 // 
 
+using System;
+using System.Collections.Generic;
 using System.Linq;
+using EventStore.Core.Messages;
 using EventStore.Core.Messaging;
 using EventStore.Projections.Core.Messages;
 using EventStore.Projections.Core.Services;
@@ -41,9 +44,8 @@ namespace EventStore.Projections.Core.Tests.Services.projections_manager
     {
         protected override void Given()
         {
-            NoStream("$projections-$all");
             NoStream("$projections-test-projection");
-            NoStream("$projections-test-projection-state");
+            NoStream("$projections-test-projection-result");
             NoStream("$projections-test-projection-order");
             AllWritesToSucceed("$projections-test-projection-order");
             NoStream("$projections-test-projection-checkpoint");
@@ -53,24 +55,29 @@ namespace EventStore.Projections.Core.Tests.Services.projections_manager
         private string _projectionName;
         private string _source;
 
-        protected override void When()
+        protected override IEnumerable<WhenStep> When()
         {
             _projectionName = "test-projection";
             _source = @"fromAll(); on_any(function(){});log(1);";
-            _manager.Handle(
-                new ProjectionManagementMessage.Post(
-                    new PublishEnvelope(_bus), ProjectionMode.Continuous, _projectionName, "JS", _source, enabled: true,
-                    checkpointsEnabled: true, emitEnabled: true));
+            yield return (new SystemMessage.BecomeMaster(Guid.NewGuid()));
+            yield return
+                (new ProjectionManagementMessage.Post(
+                    new PublishEnvelope(_bus), ProjectionMode.Continuous, _projectionName,
+                    ProjectionManagementMessage.RunAs.System, "JS", _source, enabled: true, checkpointsEnabled: true,
+                    emitEnabled: true));
             // when
-            _manager.Handle(
-                new ProjectionManagementMessage.UpdateQuery(
-                    new PublishEnvelope(_bus), _projectionName, "JS", _source, emitEnabled: false));
+            yield return
+                (new ProjectionManagementMessage.UpdateQuery(
+                    new PublishEnvelope(_bus), _projectionName, ProjectionManagementMessage.RunAs.System, "JS",
+                    _source, emitEnabled: false));
         }
 
         [Test, Category("v8")]
         public void emit_enabled_options_remains_unchanged()
         {
-            _manager.Handle(new ProjectionManagementMessage.GetQuery(new PublishEnvelope(_bus), _projectionName));
+            _manager.Handle(
+                new ProjectionManagementMessage.GetQuery(
+                    new PublishEnvelope(_bus), _projectionName, ProjectionManagementMessage.RunAs.Anonymous));
             Assert.AreEqual(1, _consumer.HandledMessages.OfType<ProjectionManagementMessage.ProjectionQuery>().Count());
             var projectionQuery =
                 _consumer.HandledMessages.OfType<ProjectionManagementMessage.ProjectionQuery>().Single();

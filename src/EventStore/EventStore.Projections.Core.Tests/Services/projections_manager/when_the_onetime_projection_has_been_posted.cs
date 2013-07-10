@@ -26,7 +26,10 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 // 
 
+using System;
+using System.Collections.Generic;
 using System.Linq;
+using EventStore.Core.Messages;
 using EventStore.Core.Messaging;
 using EventStore.Projections.Core.Messages;
 using NUnit.Framework;
@@ -39,10 +42,14 @@ namespace EventStore.Projections.Core.Tests.Services.projections_manager
         private string _projectionName;
         private string _projectionQuery;
 
-        protected override void When()
+        protected override IEnumerable<WhenStep> When()
         {
             _projectionQuery = @"fromAll(); on_any(function(){});log(1);";
-            _manager.Handle(new ProjectionManagementMessage.Post(new PublishEnvelope(_bus), _projectionQuery, enabled: true));
+            yield return (new SystemMessage.BecomeMaster(Guid.NewGuid()));
+            yield return
+                (new ProjectionManagementMessage.Post(
+                    new PublishEnvelope(_bus), ProjectionManagementMessage.RunAs.Anonymous, _projectionQuery,
+                    enabled: true));
             _projectionName = _consumer.HandledMessages.OfType<ProjectionManagementMessage.Updated>().Single().Name;
         }
 
@@ -83,6 +90,7 @@ namespace EventStore.Projections.Core.Tests.Services.projections_manager
         public void the_projection_state_can_be_retrieved()
         {
             _manager.Handle(new ProjectionManagementMessage.GetState(new PublishEnvelope(_bus), _projectionName, ""));
+            _queue.Process();
 
             Assert.AreEqual(1, _consumer.HandledMessages.OfType<ProjectionManagementMessage.ProjectionState>().Count());
             Assert.AreEqual(
@@ -94,7 +102,9 @@ namespace EventStore.Projections.Core.Tests.Services.projections_manager
         [Test, Category("v8")]
         public void the_projection_source_can_be_retrieved()
         {
-            _manager.Handle(new ProjectionManagementMessage.GetQuery(new PublishEnvelope(_bus), _projectionName));
+            _manager.Handle(
+                new ProjectionManagementMessage.GetQuery(
+                    new PublishEnvelope(_bus), _projectionName, ProjectionManagementMessage.RunAs.Anonymous));
             Assert.AreEqual(1, _consumer.HandledMessages.OfType<ProjectionManagementMessage.ProjectionQuery>().Count());
             var projectionQuery = _consumer.HandledMessages.OfType<ProjectionManagementMessage.ProjectionQuery>().Single();
             Assert.AreEqual(_projectionName, projectionQuery.Name);

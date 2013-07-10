@@ -34,24 +34,38 @@ namespace EventStore.Projections.Core.Messages
 {
     public static class CoreProjectionProcessingMessage
     {
+        public abstract class Message : EventStore.Core.Messaging.Message
+        {
+            private static readonly int TypeId = System.Threading.Interlocked.Increment(ref NextMsgId);
+            public override int MsgTypeId { get { return TypeId; } }
+
+            private readonly Guid _projectionId;
+
+            protected Message(Guid projectionId)
+            {
+                _projectionId = projectionId;
+            }
+
+            public Guid ProjectionId
+            {
+                get { return _projectionId; }
+            }
+        }
+
         public class CheckpointLoaded : Message
         {
-            private readonly Guid _correlationId;
+            private static readonly int TypeId = System.Threading.Interlocked.Increment(ref NextMsgId);
+            public override int MsgTypeId { get { return TypeId; } }
+
             private readonly CheckpointTag _checkpointTag;
             private readonly string _checkpointData;
 
-            public CheckpointLoaded(Guid correlationId, CheckpointTag checkpointTag, string checkpointData)
+            public CheckpointLoaded(Guid projectionId, CheckpointTag checkpointTag, string checkpointData)
+                : base(projectionId)
             {
                 if (checkpointTag == null) throw new ArgumentNullException("checkpointTag");
-                if (checkpointData == null) throw new ArgumentNullException("checkpointData");
-                _correlationId = correlationId;
                 _checkpointTag = checkpointTag;
                 _checkpointData = checkpointData;
-            }
-
-            public Guid CorrelationId
-            {
-                get { return _correlationId; }
             }
 
             public CheckpointTag CheckpointTag
@@ -67,18 +81,15 @@ namespace EventStore.Projections.Core.Messages
 
         public class PrerecordedEventsLoaded : Message
         {
-            private readonly Guid _correlationId;
+            private static readonly int TypeId = System.Threading.Interlocked.Increment(ref NextMsgId);
+            public override int MsgTypeId { get { return TypeId; } }
+
             private readonly CheckpointTag _checkpointTag;
 
-            public PrerecordedEventsLoaded(Guid correlationId, CheckpointTag checkpointTag)
+            public PrerecordedEventsLoaded(Guid projectionId, CheckpointTag checkpointTag)
+                : base(projectionId)
             {
-                _correlationId = correlationId;
                 _checkpointTag = checkpointTag;
-            }
-
-            public Guid CorrelationId
-            {
-                get { return _correlationId; }
             }
 
             public CheckpointTag CheckpointTag
@@ -87,8 +98,68 @@ namespace EventStore.Projections.Core.Messages
             }
         }
 
-        public class ReadyForCheckpoint : Message
+        public class CheckpointCompleted : Message
         {
+            private static readonly int TypeId = System.Threading.Interlocked.Increment(ref NextMsgId);
+            public override int MsgTypeId { get { return TypeId; } }
+
+            private readonly CheckpointTag _checkpointTag;
+
+            public CheckpointCompleted(Guid projectionId, CheckpointTag checkpointTag)
+                : base(projectionId)
+            {
+                _checkpointTag = checkpointTag;
+            }
+
+            public CheckpointTag CheckpointTag
+            {
+                get { return _checkpointTag; }
+            }
+        }
+
+        public class RestartRequested : Message
+        {
+            private static readonly int TypeId = System.Threading.Interlocked.Increment(ref NextMsgId);
+            public override int MsgTypeId { get { return TypeId; } }
+
+            private readonly string _reason;
+
+            public RestartRequested(Guid projectionId, string reason)
+                : base(projectionId)
+            {
+                _reason = reason;
+            }
+
+            public string Reason
+            {
+                get { return _reason; }
+            }
+        }
+
+        public class Failed : Message
+        {
+            private static readonly int TypeId = System.Threading.Interlocked.Increment(ref NextMsgId);
+            public override int MsgTypeId { get { return TypeId; } }
+
+            private readonly string _reason;
+
+            public Failed(Guid projectionId, string reason)
+                : base(projectionId)
+            {
+                _reason = reason;
+            }
+
+            public string Reason
+            {
+                get { return _reason; }
+            }
+        }
+
+        public class ReadyForCheckpoint : EventStore.Core.Messaging.Message
+        {
+            private static readonly int TypeId = System.Threading.Interlocked.Increment(ref NextMsgId);
+            public override int MsgTypeId { get { return TypeId; } }
+
             private readonly object _sender;
 
             public ReadyForCheckpoint(object sender)
@@ -102,35 +173,47 @@ namespace EventStore.Projections.Core.Messages
             }
         }
 
-        public class CheckpointCompleted : Message
+        public class EmittedStreamAwaiting : EventStore.Core.Messaging.Message
         {
-            private readonly CheckpointTag _checkpointTag;
+            private static readonly int TypeId = System.Threading.Interlocked.Increment(ref NextMsgId);
+            public override int MsgTypeId { get { return TypeId; } }
 
-            public CheckpointCompleted(CheckpointTag checkpointTag)
+            private readonly IEnvelope _envelope;
+            private readonly string _streamId;
+
+            public EmittedStreamAwaiting(string streamId, IEnvelope envelope)
             {
-                _checkpointTag = checkpointTag;
+                _envelope = envelope;
+                _streamId = streamId;
             }
 
-            public CheckpointTag CheckpointTag
+            public string StreamId
             {
-                get { return _checkpointTag; }
+                get { return _streamId; }
+            }
+
+            public IEnvelope Envelope
+            {
+                get { return _envelope; }
             }
         }
 
-        public class RestartRequested : Message
+        public class EmittedStreamWriteCompleted : EventStore.Core.Messaging.Message
         {
-            private readonly string _reason;
+            private static readonly int TypeId = System.Threading.Interlocked.Increment(ref NextMsgId);
+            public override int MsgTypeId { get { return TypeId; } }
 
-            public RestartRequested(string reason)
+            private readonly string _streamId;
+
+            public EmittedStreamWriteCompleted(string streamId)
             {
-                _reason = reason;
+                _streamId = streamId;
             }
 
-            public string Reason
+            public string StreamId
             {
-                get { return _reason; }
+                get { return _streamId; }
             }
         }
-
     }
 }

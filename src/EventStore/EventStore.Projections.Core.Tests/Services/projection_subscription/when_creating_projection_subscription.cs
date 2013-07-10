@@ -27,9 +27,10 @@
 // 
 
 using System;
+using EventStore.Core.Services.TimerService;
 using EventStore.Core.Tests.Bus.Helpers;
+using EventStore.Core.Tests.Fakes;
 using EventStore.Projections.Core.Messages;
-using EventStore.Projections.Core.Services;
 using EventStore.Projections.Core.Services.Processing;
 using NUnit.Framework;
 
@@ -41,80 +42,34 @@ namespace EventStore.Projections.Core.Tests.Services.projection_subscription
         [Test]
         public void it_can_be_created()
         {
-            var ps = new ProjectionSubscription(
-                Guid.NewGuid(), Guid.NewGuid(), CheckpointTag.FromPosition(0, -1),
-                new TestHandler<ProjectionSubscriptionMessage.CommittedEventReceived>(),
-                new TestHandler<ProjectionSubscriptionMessage.CheckpointSuggested>(),
-                new TestHandler<ProjectionSubscriptionMessage.ProgressChanged>(),
-                new TestHandler<ProjectionSubscriptionMessage.EofReached>(), 
-                CreateCheckpointStrategy(),
-                1000);
-        }
-
-        [Test, ExpectedException(typeof (ArgumentNullException))]
-        public void null_event_handler_throws_argument_null_exception()
-        {
-            var ps = new ProjectionSubscription(
-                Guid.NewGuid(), Guid.NewGuid(), CheckpointTag.FromPosition(0, -1), null,
-                new TestHandler<ProjectionSubscriptionMessage.CheckpointSuggested>(),
-                new TestHandler<ProjectionSubscriptionMessage.ProgressChanged>(),
-                new TestHandler<ProjectionSubscriptionMessage.EofReached>(),
-                CreateCheckpointStrategy(),
-                1000);
-        }
-
-        [Test, ExpectedException(typeof (ArgumentNullException))]
-        public void null_ceckpoint_handler_throws_argument_null_exception()
-        {
-            var ps = new ProjectionSubscription(
-                Guid.NewGuid(), Guid.NewGuid(), CheckpointTag.FromPosition(0, -1),
-                new TestHandler<ProjectionSubscriptionMessage.CommittedEventReceived>(), null,
-                new TestHandler<ProjectionSubscriptionMessage.ProgressChanged>(),
-                new TestHandler<ProjectionSubscriptionMessage.EofReached>(),
-                CreateCheckpointStrategy(),
-                1000);
-        }
-
-        [Test, ExpectedException(typeof (ArgumentNullException))]
-        public void null_progress_handler_throws_argument_null_exception()
-        {
-            var ps = new ProjectionSubscription(
-                Guid.NewGuid(), Guid.NewGuid(), CheckpointTag.FromPosition(0, -1),
-                new TestHandler<ProjectionSubscriptionMessage.CommittedEventReceived>(),
-                new TestHandler<ProjectionSubscriptionMessage.CheckpointSuggested>(), null,
-                new TestHandler<ProjectionSubscriptionMessage.EofReached>(), 
-                CreateCheckpointStrategy(), 1000);
+            new ReaderSubscription(
+                new FakePublisher(), Guid.NewGuid(), CheckpointTag.FromPosition(0, -1),
+                CreateReaderStrategy(),
+                1000, 2000);
         }
 
         [Test, ExpectedException(typeof(ArgumentNullException))]
-        public void null_eof_handler_throws_argument_null_exception()
+        public void null_publisher_throws_argument_null_exception()
         {
-            var ps = new ProjectionSubscription(
-                Guid.NewGuid(), Guid.NewGuid(), CheckpointTag.FromPosition(0, -1),
-                new TestHandler<ProjectionSubscriptionMessage.CommittedEventReceived>(),
-                new TestHandler<ProjectionSubscriptionMessage.CheckpointSuggested>(), 
-                new TestHandler<ProjectionSubscriptionMessage.ProgressChanged>(),
-                null,
-                CreateCheckpointStrategy(), 1000);
+            new ReaderSubscription(null,
+                Guid.NewGuid(), CheckpointTag.FromPosition(0, -1),
+                CreateReaderStrategy(), 1000, 2000);
         }
 
         [Test, ExpectedException(typeof(ArgumentNullException))]
-        public void null_describe_source_throws_argument_null_exception()
+        public void null_checkpoint_strategy_throws_argument_null_exception()
         {
-            var ps = new ProjectionSubscription(
-                Guid.NewGuid(), Guid.NewGuid(), CheckpointTag.FromPosition(0, -1),
-                new TestHandler<ProjectionSubscriptionMessage.CommittedEventReceived>(),
-                new TestHandler<ProjectionSubscriptionMessage.CheckpointSuggested>(),
-                new TestHandler<ProjectionSubscriptionMessage.ProgressChanged>(),
-                new TestHandler<ProjectionSubscriptionMessage.EofReached>(), null, 1000);
+            new ReaderSubscription(new FakePublisher(),
+                Guid.NewGuid(), CheckpointTag.FromPosition(0, -1), 
+                null, 1000, 2000);
         }
 
-        private CheckpointStrategy CreateCheckpointStrategy()
+        private IReaderStrategy CreateReaderStrategy()
         {
-            var result = new CheckpointStrategy.Builder();
+            var result = new ReaderStrategy.Builder();
             result.FromAll();
             result.AllEvents();
-            return result.Build(ProjectionConfig.GetTest());
+            return result.Build(new RealTimeProvider(), runAs: null);
         }
     }
 }

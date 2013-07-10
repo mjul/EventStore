@@ -26,13 +26,14 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 // 
 
+using System;
 using System.Collections.Generic;
 using EventStore.Core.Data;
 using EventStore.Core.Messages;
 using EventStore.Core.Messaging;
 using EventStore.Core.Services.RequestManager.Managers;
 using EventStore.Core.Tests.Fakes;
-using EventStore.Core.Tests.Helper;
+using EventStore.Core.Tests.Helpers;
 using NUnit.Framework;
 
 namespace EventStore.Core.Tests.Services.Replication.DeleteStream
@@ -41,31 +42,31 @@ namespace EventStore.Core.Tests.Services.Replication.DeleteStream
     {
         protected override TwoPhaseRequestManagerBase OnManager(FakePublisher publisher)
         {
-            return new DeleteStreamTwoPhaseRequestManager(publisher, 3, 3);
+            return new DeleteStreamTwoPhaseRequestManager(publisher, 3, 3, PrepareTimeout, CommitTimeout);
         }
 
         protected override IEnumerable<Message> WithInitialMessages()
         {
-            yield return new StorageMessage.DeleteStreamRequestCreated(CorrelationId, Envelope, "test123", ExpectedVersion.Any);
+            yield return new ClientMessage.DeleteStream(InternalCorrId, ClientCorrId, Envelope, true, "test123", ExpectedVersion.Any, null);
         }
 
         protected override Message When()
         {
-            return new StorageMessage.AlreadyCommitted(CorrelationId, "test123", 0, 1);
+            return new StorageMessage.AlreadyCommitted(InternalCorrId, "test123", 0, 1);
         }
 
         [Test]
         public void successful_request_message_is_publised()
         {
-            Assert.That(produced.ContainsSingle<StorageMessage.RequestCompleted>(x => x.CorrelationId == CorrelationId &&
-                                                                                          x.Success));
+            Assert.That(Produced.ContainsSingle<StorageMessage.RequestCompleted>(
+                x => x.CorrelationId == InternalCorrId && x.Success));
         }
 
         [Test]
         public void the_envelope_is_replied_to_with_success()
         {
-            Assert.That(Envelope.Replies.ContainsSingle<ClientMessage.DeleteStreamCompleted>(x => x.CorrelationId == CorrelationId &&
-                                                                                                  x.Result == OperationResult.Success));
+            Assert.That(Envelope.Replies.ContainsSingle<ClientMessage.DeleteStreamCompleted>(
+                x => x.CorrelationId == ClientCorrId && x.Result == OperationResult.Success));
         }
     }
 }

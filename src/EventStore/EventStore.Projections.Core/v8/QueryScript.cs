@@ -29,22 +29,23 @@
 using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
-using System.Runtime.Serialization;
+using EventStore.Common.Utils;
+using EventStore.Core.Util;
+using EventStore.Projections.Core.Messages;
 
 namespace EventStore.Projections.Core.v8
 {
-    class QueryScript : IDisposable
+    public class QueryScript : IDisposable
     {
+        private readonly PreludeScript _prelude;
         private readonly CompiledScript _script;
         private readonly Dictionary<string, IntPtr> _registeredHandlers = new Dictionary<string, IntPtr>();
 
         private Func<string, string[], string> _getStatePartition;
-        private Action<string, string[]> _processEvent;
-        private Func<string, string[], string> _testArray;
-        private Func<string> _getState;
+        private Func<string, string[], string> _processEvent;
+        private Func<string> _transformStateToResult;
         private Action<string> _setState;
         private Action _initialize;
-        private Func<string> _getStatistics;
         private Func<string> _getSources;
 
         // the following two delegates must be kept alive while used by unmanaged code
@@ -57,6 +58,7 @@ namespace EventStore.Projections.Core.v8
 
         public QueryScript(PreludeScript prelude, string script, string fileName)
         {
+            _prelude = prelude;
             _commandHandlerRegisteredCallback = CommandHandlerRegisteredCallback;
             _reverseCommandHandlerDelegate = ReverseCommandHandler;
 
@@ -75,9 +77,11 @@ namespace EventStore.Projections.Core.v8
 
         private CompiledScript CompileScript(PreludeScript prelude, string script, string fileName)
         {
+            prelude.ScheduleTerminateExecution();
             IntPtr query = Js1.CompileQuery(
                 prelude.GetHandle(), script, fileName, _commandHandlerRegisteredCallback, _reverseCommandHandlerDelegate);
-            CompiledScript.CheckResult(query, disposeScriptOnException: true);
+            var terminated = prelude.CancelTerminateExecution();
+            CompiledScript.CheckResult(query, terminated, disposeScriptOnException: true);
             return new CompiledScript(query, fileName);
         }
 
@@ -118,22 +122,19 @@ namespace EventStore.Projections.Core.v8
                 case "process_event":
                     _processEvent = (json, other) => ExecuteHandler(handlerHandle, json, other);
                     break;
-                case "test_array":
-                    _testArray = (json, other) => ExecuteHandler(handlerHandle, json, other);
+                case "transform_state_to_result":
+                    _transformStateToResult = () => ExecuteHandler(handlerHandle, "");
                     break;
-                case "get_state":
-                    _getState = () => ExecuteHandler(handlerHandle, "");
+                case "test_array":
                     break;
                 case "set_state":
                     _setState = json => ExecuteHandler(handlerHandle, json);
-                    break;
-                case "get_statistics":
-                    _getStatistics = () => ExecuteHandler(handlerHandle, "");
                     break;
                 case "get_sources":
                     _getSources = () => ExecuteHandler(handlerHandle, "");
                     break;
                 case "set_debugging":
+                case "debugging_get_state":
                     // ignore - browser based debugging only
                     break;
                 default:
@@ -179,15 +180,20 @@ namespace EventStore.Projections.Core.v8
         private string ExecuteHandler(IntPtr commandHandlerHandle, string json, string[] other = null)
         {
             _reverseCommandHandlerException = null;
+
+            _prelude.ScheduleTerminateExecution();
+
             IntPtr resultJsonPtr;
-            IntPtr resultHandle = Js1.ExecuteCommandHandler(
+            IntPtr memoryHandle;
+            bool success = Js1.ExecuteCommandHandler(
                 _script.GetHandle(), commandHandlerHandle, json, other, other != null ? other.Length : 0,
-                out resultJsonPtr);
-            if (resultHandle == IntPtr.Zero)
-                CompiledScript.CheckResult(_script.GetHandle(), disposeScriptOnException: false);
-            //TODO: do we need to free resulktJsonPtr in case of exception thrown a line above
+                out resultJsonPtr, out memoryHandle);
+
+            var terminated = _prelude.CancelTerminateExecution();
+            if (!success)
+                CompiledScript.CheckResult(_script.GetHandle(), terminated, disposeScriptOnException: false);
             string resultJson = Marshal.PtrToStringUni(resultJsonPtr);
-            Js1.FreeResult(resultHandle);
+            Js1.FreeResult(memoryHandle);
             if (_reverseCommandHandlerException != null)
             {
                 throw new ApplicationException(
@@ -227,19 +233,20 @@ namespace EventStore.Projections.Core.v8
             return _getStatePartition(json, other);
         }
 
-        public void Push(string json, string[] other)
+        public string Push(string json, string[] other)
         {
             if (_processEvent == null)
                 throw new InvalidOperationException("'process_event' command handler has not been registered");
 
-            _processEvent(json, other);
+            return _processEvent(json, other);
         }
 
-        public string GetState()
+        public string TransformStateToResult()
         {
-            if (_getState == null)
-                throw new InvalidOperationException("'get_state' command handler has not been registered");
-            return _getState();
+            if (_transformStateToResult == null)
+                throw new InvalidOperationException("'transform_state_to_result' command handler has not been registered");
+
+            return _transformStateToResult();
         }
 
         public void SetState(string state)
@@ -249,68 +256,9 @@ namespace EventStore.Projections.Core.v8
             _setState(state);
         }
 
-        public string GetStatistics()
-        {
-            if (_getState == null)
-                throw new InvalidOperationException("'get_statistics' command handler has not been registered");
-            return _getStatistics();
-        }
-
         public QuerySourcesDefinition GetSourcesDefintion()
         {
             return _sources;
-        }
-
-        [DataContract]
-        internal class QuerySourcesDefinition
-        {
-            [DataMember(Name = "all_streams")]
-            public bool AllStreams { get; set; }
-
-            [DataMember(Name = "categories")]
-            public string[] Categories { get; set; }
-
-            [DataMember(Name = "streams")]
-            public string[] Streams { get; set; }
-
-            [DataMember(Name = "all_events")]
-            public bool AllEvents { get; set; }
-
-            [DataMember(Name = "events")]
-            public string[] Events { get; set; }
-
-            [DataMember(Name = "by_streams")]
-            public bool ByStreams { get; set; }
-
-            [DataMember(Name = "by_custom_partitions")]
-            public bool ByCustomPartitions { get; set; }
-
-            [DataMember(Name = "options")]
-            public QuerySourcesDefinitionOptions Options { get; set;}
-        }
-
-        [DataContract]
-        internal class QuerySourcesDefinitionOptions
-        {
-            [DataMember(Name = "stateStreamName")]
-            public string StateStreamName { get; set; }
-
-            [DataMember(Name = "useEventIndexes")]
-            public bool UseEventIndexes { get; set; }
-
-            [DataMember(Name = "$forceProjectionName")]
-            public string ForceProjectionName { get; set; }
-
-            [DataMember(Name = "reorderEvents")]
-            public bool ReorderEvents { get; set; }
-
-            [DataMember(Name = "processingLag")]
-            public int? ProcessingLag { get; set; }
-
-            [DataMember(Name = "emitStateUpdated")]
-            public bool EmitStateUpdated { get; set; }
-
-
         }
     }
 }

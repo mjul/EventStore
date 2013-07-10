@@ -28,17 +28,18 @@
 
 using System;
 using System.Linq;
+using EventStore.Core.Data;
 using EventStore.Core.Messages;
 using EventStore.Core.Services.TimerService;
+using EventStore.Core.Tests.Helpers;
 using EventStore.Projections.Core.Messages;
 using EventStore.Projections.Core.Services.Processing;
-using EventStore.Projections.Core.Tests.Services.projections_manager.managed_projection;
 using NUnit.Framework;
 
 namespace EventStore.Projections.Core.Tests.Services.event_reader.heading_event_reader
 {
     [TestFixture]
-    public class when_starting_a_heading_event_reader : TestFixtureWithReadWriteDisaptchers
+    public class when_starting_a_heading_event_reader : TestFixtureWithReadWriteDispatchers
     {
         private HeadingEventReader _point;
         private Exception _exception;
@@ -61,7 +62,7 @@ namespace EventStore.Projections.Core.Tests.Services.event_reader.heading_event_
             _point.Start(
                 _distibutionPointCorrelationId,
                 new TransactionFileEventReader(
-                    _bus, _distibutionPointCorrelationId, new EventPosition(0, -1), new RealTimeProvider()));
+                    _bus, _distibutionPointCorrelationId, null, new TFPos(0, -1), new RealTimeProvider()));
         }
 
 
@@ -75,9 +76,9 @@ namespace EventStore.Projections.Core.Tests.Services.event_reader.heading_event_
         public void can_handle_events()
         {
             _point.Handle(
-                new ProjectionCoreServiceMessage.CommittedEventDistributed(
-                    _distibutionPointCorrelationId, new EventPosition(20, 10), "stream", 10, false,
-                    ResolvedEvent.Sample(Guid.NewGuid(), "type", false, new byte[0], new byte[0])));
+                ReaderSubscriptionMessage.CommittedEventDistributed.Sample(
+                    _distibutionPointCorrelationId, new TFPos(20, 10), "stream", 10, false, Guid.NewGuid(),
+                    "type", false, new byte[0], new byte[0]));
         }
 
         [Test]
@@ -90,8 +91,7 @@ namespace EventStore.Projections.Core.Tests.Services.event_reader.heading_event_
         [Test]
         public void cannot_suibscribe_even_from_reader_zero_position()
         {
-            var subscribed = _point.TrySubscribe(
-                Guid.NewGuid(), new FakeProjectionSubscription(), -1);
+            var subscribed = _point.TrySubscribe(Guid.NewGuid(), new FakeReaderSubscription(), -1);
             Assert.AreEqual(false, subscribed);
         }
     }

@@ -27,8 +27,10 @@
 // 
 
 using System;
+using System.Security.Principal;
 using System.Text;
 using EventStore.Core.Messaging;
+using EventStore.Projections.Core.Messages;
 using EventStore.Projections.Core.Services;
 using EventStore.Projections.Core.Services.Processing;
 
@@ -36,6 +38,9 @@ namespace EventStore.Projections.Core.Messages
 {
     public abstract class CoreProjectionManagementMessage : Message
     {
+        private static readonly int TypeId = System.Threading.Interlocked.Increment(ref NextMsgId);
+        public override int MsgTypeId { get { return TypeId; } }
+
         private readonly Guid _projectionIdId;
 
         protected CoreProjectionManagementMessage(Guid projectionId)
@@ -50,6 +55,9 @@ namespace EventStore.Projections.Core.Messages
 
         public class Stopped : CoreProjectionManagementMessage
         {
+            private new static readonly int TypeId = System.Threading.Interlocked.Increment(ref NextMsgId);
+            public override int MsgTypeId { get { return TypeId; } }
+
             private bool _completed;
 
             public Stopped(Guid projectionId, bool completed)
@@ -66,6 +74,9 @@ namespace EventStore.Projections.Core.Messages
 
         public class Started : CoreProjectionManagementMessage
         {
+            private new static readonly int TypeId = System.Threading.Interlocked.Increment(ref NextMsgId);
+            public override int MsgTypeId { get { return TypeId; } }
+
             public Started(Guid projectionId)
                 : base(projectionId)
             {
@@ -74,6 +85,9 @@ namespace EventStore.Projections.Core.Messages
 
         public class Faulted : CoreProjectionManagementMessage
         {
+            private new static readonly int TypeId = System.Threading.Interlocked.Increment(ref NextMsgId);
+            public override int MsgTypeId { get { return TypeId; } }
+
             private readonly string _faultedReason;
 
             public Faulted(Guid projectionId, string faultedReason)
@@ -90,6 +104,9 @@ namespace EventStore.Projections.Core.Messages
 
         public class Start : CoreProjectionManagementMessage
         {
+            private new static readonly int TypeId = System.Threading.Interlocked.Increment(ref NextMsgId);
+            public override int MsgTypeId { get { return TypeId; } }
+
             public Start(Guid projectionId)
                 : base(projectionId)
             {
@@ -98,6 +115,9 @@ namespace EventStore.Projections.Core.Messages
 
         public class LoadStopped : CoreProjectionManagementMessage
         {
+            private new static readonly int TypeId = System.Threading.Interlocked.Increment(ref NextMsgId);
+            public override int MsgTypeId { get { return TypeId; } }
+
             public LoadStopped(Guid correlationId)
                 : base(correlationId)
             {
@@ -106,6 +126,9 @@ namespace EventStore.Projections.Core.Messages
 
         public class Stop : CoreProjectionManagementMessage
         {
+            private new static readonly int TypeId = System.Threading.Interlocked.Increment(ref NextMsgId);
+            public override int MsgTypeId { get { return TypeId; } }
+
             public Stop(Guid projectionId)
                 : base(projectionId)
             {
@@ -114,6 +137,9 @@ namespace EventStore.Projections.Core.Messages
 
         public class Kill : CoreProjectionManagementMessage
         {
+            private new static readonly int TypeId = System.Threading.Interlocked.Increment(ref NextMsgId);
+            public override int MsgTypeId { get { return TypeId; } }
+
             public Kill(Guid projectionId)
                 : base(projectionId)
             {
@@ -122,6 +148,9 @@ namespace EventStore.Projections.Core.Messages
 
         public class GetState : CoreProjectionManagementMessage
         {
+            private new static readonly int TypeId = System.Threading.Interlocked.Increment(ref NextMsgId);
+            public override int MsgTypeId { get { return TypeId; } }
+
             private readonly IEnvelope _envelope;
             private readonly Guid _correlationId;
             private readonly string _partition;
@@ -152,15 +181,23 @@ namespace EventStore.Projections.Core.Messages
             }
         }
 
-        public class GetDebugState : CoreProjectionManagementMessage
+        public class GetResult : CoreProjectionManagementMessage
         {
-            private readonly IEnvelope _envelope;
+            private new static readonly int TypeId = System.Threading.Interlocked.Increment(ref NextMsgId);
+            public override int MsgTypeId { get { return TypeId; } }
 
-            public GetDebugState(IEnvelope envelope, Guid correlationId)
-                : base(correlationId)
+            private readonly IEnvelope _envelope;
+            private readonly Guid _correlationId;
+            private readonly string _partition;
+
+            public GetResult(IEnvelope envelope, Guid correlationId, Guid projectionId, string partition)
+                : base(projectionId)
             {
                 if (envelope == null) throw new ArgumentNullException("envelope");
+                if (partition == null) throw new ArgumentNullException("partition");
                 _envelope = envelope;
+                _correlationId = correlationId;
+                _partition = partition;
             }
 
             public IEnvelope Envelope
@@ -168,35 +205,47 @@ namespace EventStore.Projections.Core.Messages
                 get { return _envelope; }
             }
 
+            public string Partition
+            {
+                get { return _partition; }
+            }
+
+            public Guid CorrelationId
+            {
+                get { return _correlationId; }
+            }
         }
 
         public class UpdateStatistics : CoreProjectionManagementMessage
         {
+            private new static readonly int TypeId = System.Threading.Interlocked.Increment(ref NextMsgId);
+            public override int MsgTypeId { get { return TypeId; } }
+
             public UpdateStatistics(Guid projectionId)
                 : base(projectionId)
             {
             }
         }
 
-        public class StateReport : CoreProjectionManagementMessage
+        public abstract class DataReportBase : CoreProjectionManagementMessage
         {
+            private new static readonly int TypeId = System.Threading.Interlocked.Increment(ref NextMsgId);
+            public override int MsgTypeId { get { return TypeId; } }
+
             private readonly Guid _correlationId;
-            private readonly string _state;
             private readonly Exception _exception;
             private readonly string _partition;
+            private readonly CheckpointTag _position;
 
-            public StateReport(Guid correlationId, Guid projectionId, string partition, string state, Exception exception = null)
+            protected DataReportBase(
+                Guid correlationId, Guid projectionId, string partition, CheckpointTag position,
+                Exception exception = null)
                 : base(projectionId)
             {
                 _correlationId = correlationId;
-                _state = state;
                 _exception = exception;
                 _partition = partition;
-            }
-
-            public string State
-            {
-                get { return _state; }
+                _position = position;
             }
 
             public string Partition
@@ -213,60 +262,62 @@ namespace EventStore.Projections.Core.Messages
             {
                 get { return _correlationId; }
             }
+
+            public CheckpointTag Position
+            {
+                get { return _position; }
+            }
         }
 
-        public class DebugState : CoreProjectionManagementMessage
+        public class StateReport : DataReportBase
         {
-            private readonly Event[] _events;
+            private new static readonly int TypeId = System.Threading.Interlocked.Increment(ref NextMsgId);
+            public override int MsgTypeId { get { return TypeId; } }
 
-            public DebugState(Guid projectionId, Event[] events)
-                : base(projectionId)
+            private readonly string _state;
+
+            public StateReport(
+                Guid correlationId, Guid projectionId, string partition, string state, CheckpointTag position,
+                Exception exception = null)
+                : base(correlationId, projectionId, partition, position, exception)
             {
-                _events = events;
+                _state = state;
             }
 
-            public Event[] Events
+            public string State
             {
-                get { return _events; }
+                get { return _state; }
             }
 
-            public class Event
+        }
+
+        public class ResultReport : DataReportBase
+        {
+            private new static readonly int TypeId = System.Threading.Interlocked.Increment(ref NextMsgId);
+            public override int MsgTypeId { get { return TypeId; } }
+
+            private readonly string _result;
+
+            public ResultReport(
+                Guid correlationId, Guid projectionId, string partition, string result, CheckpointTag position,
+                Exception exception = null)
+                : base(correlationId, projectionId, partition, position, exception)
             {
-                public static Event Create(ProjectionSubscriptionMessage.CommittedEventReceived source, string partition)
-                {
-                    return new Event 
-                        {
-                            Partition = partition,
-                            BodyRaw = Encoding.UTF8.GetString(source.Data.Data),
-                            MetadataRaw = Encoding.UTF8.GetString(source.Data.Metadata),
-                            EventType = source.Data.EventType,
-                            StreamId = source.EventStreamId,
-                            SequenceNumber = source.EventSequenceNumber,
-                            Category = source.EventCategory,
-                            LogPosition = source.Position.PreparePosition,
-                        };
-                }
-
-                public string Category { get; set; }
-
-                public string Partition { get; set; }
-
-                public long LogPosition { get; set; }
-
-                public int SequenceNumber { get; set; }
-
-                public string StreamId { get; set; }
-
-                public string EventType { get; set; }
-
-                public string MetadataRaw { get; set; }
-
-                public string BodyRaw { get; set; }
+                _result = result;
             }
+
+            public string Result
+            {
+                get { return _result; }
+            }
+
         }
 
         public class StatisticsReport : CoreProjectionManagementMessage
         {
+            private new static readonly int TypeId = System.Threading.Interlocked.Increment(ref NextMsgId);
+            public override int MsgTypeId { get { return TypeId; } }
+
             private readonly ProjectionStatistics _statistics;
 
             public StatisticsReport(Guid projectionId, ProjectionStatistics statistics)
@@ -283,34 +334,42 @@ namespace EventStore.Projections.Core.Messages
 
         public class Prepared : CoreProjectionManagementMessage
         {
-            private readonly ProjectionSourceDefintion _sourceDefintion;
+            private new static readonly int TypeId = System.Threading.Interlocked.Increment(ref NextMsgId);
+            public override int MsgTypeId { get { return TypeId; } }
 
-            public Prepared(Guid projectionId, ProjectionSourceDefintion sourceDefintion)
+            private readonly ProjectionSourceDefinition _sourceDefinition;
+
+            public Prepared(Guid projectionId, ProjectionSourceDefinition sourceDefinition)
                 : base(projectionId)
             {
-                _sourceDefintion = sourceDefintion;
+                _sourceDefinition = sourceDefinition;
             }
 
-            public ProjectionSourceDefintion SourceDefintion
+            public ProjectionSourceDefinition SourceDefinition
             {
-                get { return _sourceDefintion; }
+                get { return _sourceDefinition; }
             }
         }
 
         public class CreateAndPrepare : CoreProjectionManagementMessage
         {
+            private new static readonly int TypeId = System.Threading.Interlocked.Increment(ref NextMsgId);
+            public override int MsgTypeId { get { return TypeId; } }
+
             private readonly IEnvelope _envelope;
             private readonly ProjectionConfig _config;
             private readonly Func<IProjectionStateHandler> _handlerFactory;
             private readonly string _name;
+            private readonly ProjectionVersion _version;
 
             public CreateAndPrepare(
-                IEnvelope envelope, Guid projectionId, string name, ProjectionConfig config,
+                IEnvelope envelope, Guid projectionId, string name, ProjectionVersion version, ProjectionConfig config,
                 Func<IProjectionStateHandler> handlerFactory)
                 : base(projectionId)
             {
                 _envelope = envelope;
                 _name = name;
+                _version = version;
                 _config = config;
                 _handlerFactory = handlerFactory;
             }
@@ -334,26 +393,38 @@ namespace EventStore.Projections.Core.Messages
             {
                 get { return _envelope; }
             }
+
+            public ProjectionVersion Version
+            {
+                get { return _version; }
+            }
+
         }
 
         public class CreatePrepared : CoreProjectionManagementMessage
         {
+            private new static readonly int TypeId = System.Threading.Interlocked.Increment(ref NextMsgId);
+            public override int MsgTypeId { get { return TypeId; } }
+
             private readonly IEnvelope _envelope;
             private readonly ProjectionConfig _config;
-            private readonly ISourceDefinitionConfigurator _sourceDefintion;
+            private readonly ISourceDefinitionConfigurator _sourceDefinition;
             private readonly string _name;
+            private readonly ProjectionVersion _version;
 
             public CreatePrepared(
-                IEnvelope envelope, Guid projectionId, string name, ProjectionConfig config, ISourceDefinitionConfigurator sourceDefintion)
+                IEnvelope envelope, Guid projectionId, string name, ProjectionVersion version, ProjectionConfig config,
+                ISourceDefinitionConfigurator sourceDefinition)
                 : base(projectionId)
             {
                 if (name == null) throw new ArgumentNullException("name");
                 if (config == null) throw new ArgumentNullException("config");
-                if (sourceDefintion == null) throw new ArgumentNullException("sourceDefintion");
+                if (sourceDefinition == null) throw new ArgumentNullException("sourceDefinition");
                 _envelope = envelope;
                 _name = name;
+                _version = version;
                 _config = config;
-                _sourceDefintion = sourceDefintion;
+                _sourceDefinition = sourceDefinition;
             }
 
             public ProjectionConfig Config
@@ -371,14 +442,22 @@ namespace EventStore.Projections.Core.Messages
                 get { return _envelope; }
             }
 
-            public ISourceDefinitionConfigurator SourceDefintion
+            public ISourceDefinitionConfigurator SourceDefinition
             {
-                get { return _sourceDefintion; }
+                get { return _sourceDefinition; }
+            }
+
+            public ProjectionVersion Version
+            {
+                get { return _version; }
             }
         }
 
         public class Dispose : CoreProjectionManagementMessage
         {
+            private new static readonly int TypeId = System.Threading.Interlocked.Increment(ref NextMsgId);
+            public override int MsgTypeId { get { return TypeId; } }
+
             public Dispose(Guid projectionId)
                 : base(projectionId)
             {

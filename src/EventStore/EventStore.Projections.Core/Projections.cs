@@ -28,6 +28,7 @@
 
 using System.Collections.Generic;
 using System.Linq;
+using EventStore.Core;
 using EventStore.Core.Bus;
 using EventStore.Core.Messages;
 using EventStore.Core.Messaging;
@@ -35,13 +36,48 @@ using EventStore.Core.Services.TimerService;
 using EventStore.Core.Services.Transport.Http;
 using EventStore.Core.TransactionLog.Chunks;
 using EventStore.Projections.Core.Messages;
+using EventStore.Projections.Core.Messages.EventReaders.Feeds;
 using EventStore.Projections.Core.Messaging;
 using EventStore.Projections.Core.Services.Processing;
 
 namespace EventStore.Projections.Core
 {
-    public class Projections
+    public sealed class ProjectionsSubsystem : ISubsystem
     {
+        private Projections _projections;
+        private readonly int _projectionWorkerThreadCount;
+        private readonly bool _runProjections;
+
+        public ProjectionsSubsystem(int projectionWorkerThreadCount, bool runProjections)
+        {
+            _projectionWorkerThreadCount = projectionWorkerThreadCount;
+            _runProjections = runProjections;
+        }
+
+        public void Register(
+            TFChunkDb db, QueuedHandler mainQueue, ISubscriber mainBus, TimerService timerService,
+            ITimeProvider timeProvider, IHttpForwarder httpForwarder, HttpService[] httpServices, IPublisher networkSendService)
+        {
+            _projections = new EventStore.Projections.Core.Projections(
+                db, mainQueue, mainBus, timerService, timeProvider, httpForwarder, httpServices, networkSendService,
+                projectionWorkerThreadCount: _projectionWorkerThreadCount, runProjections: _runProjections);
+        }
+
+        public void Start()
+        {
+            _projections.Start();
+        }
+
+        public void Stop()
+        {
+            _projections.Stop();
+        }
+    }
+
+    sealed class Projections
+    {
+        public const int VERSION = 2;
+
         private List<QueuedHandler> _coreQueues;
         private readonly int _projectionWorkerThreadCount;
         private QueuedHandler _managerInputQueue;
@@ -49,27 +85,28 @@ namespace EventStore.Projections.Core
         private ProjectionManagerNode _projectionManagerNode;
 
         public Projections(
-            TFChunkDb db, QueuedHandler mainQueue, InMemoryBus mainBus, TimerService timerService,
-            HttpService httpService, IPublisher networkSendQueue,
-            int projectionWorkerThreadCount)
+            TFChunkDb db, QueuedHandler mainQueue, ISubscriber mainBus, TimerService timerService, ITimeProvider timeProvider,
+            IHttpForwarder httpForwarder, HttpService[] httpServices, IPublisher networkSendQueue,
+            int projectionWorkerThreadCount, bool runProjections)
         {
             _projectionWorkerThreadCount = projectionWorkerThreadCount;
-            SetupMessaging(db, mainQueue, mainBus, timerService, httpService, networkSendQueue);
+            SetupMessaging(db, mainQueue, mainBus, timerService, timeProvider, httpForwarder, httpServices, networkSendQueue, runProjections);
+
         }
 
         private void SetupMessaging(
-            TFChunkDb db, QueuedHandler mainQueue, InMemoryBus mainBus, TimerService timerService,
-            HttpService httpService, IPublisher networkSendQueue)
+            TFChunkDb db, QueuedHandler mainQueue, ISubscriber mainBus, TimerService timerService, ITimeProvider timeProvider,
+            IHttpForwarder httpForwarder, HttpService[] httpServices, IPublisher networkSendQueue, bool runProjections)
         {
             _coreQueues = new List<QueuedHandler>();
             _managerInputBus = new InMemoryBus("manager input bus");
-            _managerInputQueue = new QueuedHandler(_managerInputBus, "ProjectionManager");
-
+            _managerInputQueue = new QueuedHandler(_managerInputBus, "Projections Master");
             while (_coreQueues.Count < _projectionWorkerThreadCount)
             {
                 var coreInputBus = new InMemoryBus("bus");
-                var coreQueue = new QueuedHandler(coreInputBus, "Projection Core #" + _coreQueues.Count, groupName: "Projection Core");
-                var projectionNode = new ProjectionWorkerNode(db, coreQueue);
+                var coreQueue = new QueuedHandler(
+                    coreInputBus, "Projection Core #" + _coreQueues.Count, groupName: "Projection Core");
+                var projectionNode = new ProjectionWorkerNode(db, coreQueue, timeProvider, runProjections);
                 projectionNode.SetupMessaging(coreInputBus);
 
 
@@ -82,21 +119,25 @@ namespace EventStore.Projections.Core
                 projectionNode.CoreOutput.Subscribe<ClientMessage.ReadAllEventsForward>(forwarder);
                 projectionNode.CoreOutput.Subscribe<ClientMessage.WriteEvents>(forwarder);
 
-                projectionNode.CoreOutput.Subscribe(
-                    Forwarder.Create<CoreProjectionManagementMessage.StateReport>(_managerInputQueue));
-                projectionNode.CoreOutput.Subscribe(
-                    Forwarder.Create<CoreProjectionManagementMessage.DebugState>(_managerInputQueue));
-                projectionNode.CoreOutput.Subscribe(
-                    Forwarder.Create<CoreProjectionManagementMessage.StatisticsReport>(_managerInputQueue));
-                projectionNode.CoreOutput.Subscribe(
-                    Forwarder.Create<CoreProjectionManagementMessage.Started>(_managerInputQueue));
-                projectionNode.CoreOutput.Subscribe(
-                    Forwarder.Create<CoreProjectionManagementMessage.Stopped>(_managerInputQueue));
-                projectionNode.CoreOutput.Subscribe(
-                    Forwarder.Create<CoreProjectionManagementMessage.Faulted>(_managerInputQueue));
-                projectionNode.CoreOutput.Subscribe(
-                    Forwarder.Create<CoreProjectionManagementMessage.Prepared>(_managerInputQueue));
 
+                if (runProjections)
+                {
+                    projectionNode.CoreOutput.Subscribe(
+                        Forwarder.Create<CoreProjectionManagementMessage.StateReport>(_managerInputQueue));
+                    projectionNode.CoreOutput.Subscribe(
+                        Forwarder.Create<CoreProjectionManagementMessage.ResultReport>(_managerInputQueue));
+                    projectionNode.CoreOutput.Subscribe(
+                        Forwarder.Create<CoreProjectionManagementMessage.StatisticsReport>(_managerInputQueue));
+                    projectionNode.CoreOutput.Subscribe(
+                        Forwarder.Create<CoreProjectionManagementMessage.Started>(_managerInputQueue));
+                    projectionNode.CoreOutput.Subscribe(
+                        Forwarder.Create<CoreProjectionManagementMessage.Stopped>(_managerInputQueue));
+                    projectionNode.CoreOutput.Subscribe(
+                        Forwarder.Create<CoreProjectionManagementMessage.Faulted>(_managerInputQueue));
+                    projectionNode.CoreOutput.Subscribe(
+                        Forwarder.Create<CoreProjectionManagementMessage.Prepared>(_managerInputQueue));
+
+                }
                 projectionNode.CoreOutput.Subscribe(timerService);
 
 
@@ -107,9 +148,12 @@ namespace EventStore.Projections.Core
                 _coreQueues.Add(coreQueue);
             }
 
+            _managerInputBus.Subscribe(
+            Forwarder.CreateBalancing<FeedReaderMessage.ReadPage>(_coreQueues.Cast<IPublisher>().ToArray()));
 
             _projectionManagerNode = ProjectionManagerNode.Create(
-                db, _managerInputQueue, httpService, networkSendQueue, _coreQueues.Cast<IPublisher>().ToArray());
+                db, _managerInputQueue, httpForwarder, httpServices, networkSendQueue,
+                _coreQueues.Cast<IPublisher>().ToArray(), runProjections);
             _projectionManagerNode.SetupMessaging(_managerInputBus);
             {
                 var forwarder = new RequestResponseQueueForwarder(
@@ -118,8 +162,13 @@ namespace EventStore.Projections.Core
                 _projectionManagerNode.Output.Subscribe<ClientMessage.ReadStreamEventsBackward>(forwarder);
                 _projectionManagerNode.Output.Subscribe<ClientMessage.ReadStreamEventsForward>(forwarder);
                 _projectionManagerNode.Output.Subscribe<ClientMessage.WriteEvents>(forwarder);
+                _projectionManagerNode.Output.Subscribe(
+                    Forwarder.Create<ProjectionManagementMessage.RequestSystemProjections>(mainQueue));
                 _projectionManagerNode.Output.Subscribe(Forwarder.Create<Message>(_managerInputQueue));
-                    // self forward all
+
+                _projectionManagerNode.Output.Subscribe(timerService);
+
+                // self forward all
 
                 mainBus.Subscribe(Forwarder.Create<SystemMessage.StateChangeMessage>(_managerInputQueue));
                 _managerInputBus.Subscribe(new UnwrapEnvelopeHandler());
@@ -128,9 +177,18 @@ namespace EventStore.Projections.Core
 
         public void Start()
         {
-            _managerInputQueue.Start();
+            if (_managerInputQueue != null) 
+                _managerInputQueue.Start();
             foreach (var queue in _coreQueues)
                 queue.Start();
+        }
+
+        public void Stop()
+        {
+            if (_managerInputQueue != null) 
+                _managerInputQueue.Stop();
+            foreach (var queue in _coreQueues)
+                queue.Stop();
         }
     }
 }

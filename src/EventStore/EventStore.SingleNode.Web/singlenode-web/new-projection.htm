@@ -39,12 +39,8 @@
     // either event_type1 or event_type1 events in the store
     options({
 
-                // stateStreamName: null,         // overrides output stream StateUpdated events are emitted to
-                                                  // NOTE: use {0} placeholder in case of a partitioned projection
-                useEventIndexes: true,            // makes a fromAll() projection to use event indexes 
-                                                  // NOTE: $by_event_type standard projection should be enabled
                 // reorderEvents: false,          // enables event reordering in a multi-stream projection
-                                                  // event reordering atempts to feed the projection with events in a 
+                                                  // event reordering attempts to feed the projection with events in a 
                                                   // their natural order
                 // processingLag: 0,              // processing lag in ms allowing event reordering to happen
     });
@@ -53,7 +49,7 @@
     // fromStream('streamId') | fromStreams(['sream1', 'stream2']) | fromCategory('category')
        //NOTE: fromCategory requires $by_category standard projection to be enabled
 
-    // .foreachStream() | .paritionBy(function(e) { return e.body.useId; })
+    // .foreachStream() | .partitionBy(function(e) { return e.body.useId; })
 
     .when({
         $init: function () {
@@ -61,8 +57,9 @@
         },
       
         event_type1: function(s, e) {
-            //  emit('streamId', 'eventType', {/* event body */});
-            //  linkTo('streamId', e);
+            //  emit('streamId', 'eventType', {/* event body */} [, {/* optional event metadata */}]);
+            //  linkTo('streamId', e [, {/* optional link-to-event metadata */}]);
+            //  copyTo('streamId', e);
             s.count1 += 1;
             return s;
         },
@@ -77,10 +74,10 @@
                                      // other event filters
         */
     })
-    // .emitStateUpdated()           
-                    
+    // .filterBy(f)/transformBy(f)
+    // .outputTo(name[, namePattern]) // defines a name for the output stream               
                         
-    //NOTE: emitStateUpdated(), emit(), linkTo() require "emit enabled" (see checkbox below)
+    //NOTE: filterBy(), transformBy(), emit(), linkTo(), copyTo() require "emit enabled" (see checkbox below)
                             
                         </div>
                     </div>

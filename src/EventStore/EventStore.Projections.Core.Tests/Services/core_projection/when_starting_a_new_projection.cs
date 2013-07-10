@@ -37,7 +37,7 @@ namespace EventStore.Projections.Core.Tests.Services.core_projection
     {
         protected override void Given()
         {
-            NoStream("$projections-projection-state");
+            NoStream("$projections-projection-result");
             NoStream("$projections-projection-order");
             AllWritesToSucceed("$projections-projection-order");
             NoStream("$projections-projection-checkpoint");
@@ -53,12 +53,6 @@ namespace EventStore.Projections.Core.Tests.Services.core_projection
             Assert.AreEqual(1, _subscribeProjectionHandler.HandledMessages.Count);
             Assert.AreEqual(0, _subscribeProjectionHandler.HandledMessages[0].FromPosition.Position.CommitPosition);
             Assert.AreEqual(-1, _subscribeProjectionHandler.HandledMessages[0].FromPosition.Position.PreparePosition);
-        }
-
-        [Test]
-        public void should_subscribe_non_null_subscriber()
-        {
-            Assert.NotNull(_subscribeProjectionHandler.HandledMessages[0].Subscriber);
         }
 
         [Test]

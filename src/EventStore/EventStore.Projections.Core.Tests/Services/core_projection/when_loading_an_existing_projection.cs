@@ -41,17 +41,17 @@ namespace EventStore.Projections.Core.Tests.Services.core_projection
         protected override void Given()
         {
             ExistingEvent(
-                "$projections-projection-state", "StateUpdated",
-                @"{""CommitPosition"": 100, ""PreparePosition"": 50}", _testProjectionState);
+                "$projections-projection-result", "Result",
+                @"{""c"": 100, ""p"": 50}", _testProjectionState);
             ExistingEvent(
-                "$projections-projection-checkpoint", "ProjectionCheckpoint",
-                @"{""CommitPosition"": 100, ""PreparePosition"": 50}", _testProjectionState);
+                "$projections-projection-checkpoint", "$ProjectionCheckpoint",
+                @"{""c"": 100, ""p"": 50}", _testProjectionState);
             ExistingEvent(
-                "$projections-projection-state", "StateUpdated",
-                @"{""CommitPosition"": 200, ""PreparePosition"": 150}", _testProjectionState);
+                "$projections-projection-result", "Result",
+                @"{""c"": 200, ""p"": 150}", _testProjectionState);
             ExistingEvent(
-                "$projections-projection-state", "StateUpdated",
-                @"{""CommitPosition"": 300, ""PreparePosition"": 250}", _testProjectionState);
+                "$projections-projection-result", "Result",
+                @"{""c"": 300, ""p"": 250}", _testProjectionState);
         }
 
         protected override void When()
@@ -65,12 +65,6 @@ namespace EventStore.Projections.Core.Tests.Services.core_projection
             Assert.AreEqual(1, _subscribeProjectionHandler.HandledMessages.Count);
             Assert.AreEqual(100, _subscribeProjectionHandler.HandledMessages[0].FromPosition.Position.CommitPosition);
             Assert.AreEqual(50, _subscribeProjectionHandler.HandledMessages[0].FromPosition.Position.PreparePosition);
-        }
-
-        [Test]
-        public void should_subscribe_non_null_subscriber()
-        {
-            Assert.NotNull(_subscribeProjectionHandler.HandledMessages[0].Subscriber);
         }
 
         [Test]

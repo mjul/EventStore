@@ -37,13 +37,13 @@ namespace EventStore.Projections.Core.Services.Processing
         public class QuerySourceOptions
         {
             [DataMember]
-            public string StateStreamName { get; set; }
+            public string ResultStreamName { get; set; }
+
+            [DataMember]
+            public string PartitionResultStreamNamePattern { get; set; }
 
             [DataMember]
             public string ForceProjectionName { get; set; }
-
-            [DataMember]
-            public bool UseEventIndexes { get; set; }
 
             [DataMember]
             public bool ReorderEvents { get; set; }
@@ -52,7 +52,11 @@ namespace EventStore.Projections.Core.Services.Processing
             public int ProcessingLag { get; set; }
 
             [DataMember]
-            public bool EmitStateUpdated { get; set; }
+            public bool DefinesStateTransform { get; set; }
+
+            [DataMember]
+            public bool IncludeLinks { get; set; }
+
         }
 
         protected readonly QuerySourceOptions _options = new QuerySourceOptions();
@@ -63,6 +67,7 @@ namespace EventStore.Projections.Core.Services.Processing
         protected List<string> _events;
         protected bool _byStream;
         protected bool _byCustomPartitions;
+        protected bool _definesStateTransform;
 
         public void FromAll()
         {
@@ -88,6 +93,11 @@ namespace EventStore.Projections.Core.Services.Processing
             _allEvents = true;
         }
 
+        public void SetIncludeLinks(bool includeLinks = true)
+        {
+            _options.IncludeLinks = true;
+        }
+
         public void IncludeEvent(string eventName)
         {
             if (_events == null)
@@ -105,19 +115,24 @@ namespace EventStore.Projections.Core.Services.Processing
             _byCustomPartitions = true;
         }
 
-        public void SetStateStreamNameOption(string stateStreamName)
+        public void SetDefinesStateTransform()
         {
-            _options.StateStreamName = string.IsNullOrWhiteSpace(stateStreamName) ? null : stateStreamName;
+            _definesStateTransform = true;
+        }
+
+        public void SetResultStreamNameOption(string resultStreamName)
+        {
+            _options.ResultStreamName = string.IsNullOrWhiteSpace(resultStreamName) ? null : resultStreamName;
+        }
+
+        public void SetPartitionResultStreamNamePatternOption(string partitionResultStreamNamePattern)
+        {
+            _options.PartitionResultStreamNamePattern = string.IsNullOrWhiteSpace(partitionResultStreamNamePattern) ? null : partitionResultStreamNamePattern;
         }
 
         public void SetForceProjectionName(string forceProjectionName)
         {
             _options.ForceProjectionName = string.IsNullOrWhiteSpace(forceProjectionName) ? null : forceProjectionName;
-        }
-
-        public void SetUseEventIndexes(bool useEventIndexes)
-        {
-            _options.UseEventIndexes = useEventIndexes;
         }
 
         public void SetReorderEvents(bool reorderEvents)
@@ -130,12 +145,6 @@ namespace EventStore.Projections.Core.Services.Processing
             _options.ProcessingLag = processingLag;
         }
 
-        public void SetEmitStateUpdated(bool emitStateUpdated = true)
-        {
-            _options.EmitStateUpdated = emitStateUpdated;
-        }
-
-
         protected HashSet<string> ToSet(IEnumerable<string> list)
         {
             if (list == null)
@@ -143,7 +152,7 @@ namespace EventStore.Projections.Core.Services.Processing
             return new HashSet<string>(list);
         }
 
-        public void Validate(ProjectionConfig config)
+        protected void Validate()
         {
             if (!_allStreams && _categories == null && _streams == null)
                 throw new InvalidOperationException("None of streams and categories are included");
@@ -159,26 +168,18 @@ namespace EventStore.Projections.Core.Services.Processing
 
             if (_byStream && _streams != null)
                 throw new InvalidOperationException("foreachStream projections are not supported on stream based sources");
-            if (_options.UseEventIndexes && !_allStreams)
-                throw new InvalidOperationException("useEventIndexes option is only available in fromAll() projections");
-            if (_options.UseEventIndexes && _allEvents)
-                throw new InvalidOperationException("useEventIndexes option cannot be used in whenAny() projections");
-
             if (_options.ReorderEvents)
             {
-                if (_options.UseEventIndexes)
-                    throw new InvalidOperationException("Event reordering cannot be used with use event indexes option");
-                if (!(_allStreams || _streams != null && _streams.Count > 1))
+                if (_allStreams)
+                    throw new InvalidOperationException("Event reordering cannot be used with fromAll()");
+                if (!(_streams != null && _streams.Count > 1))
                 {
                     throw new InvalidOperationException(
-                        "Event reordering is only available in fromAll() and fromStreams([]) projections");
+                        "Event reordering is only available in fromStreams([]) projections");
                 }
                 if (_options.ProcessingLag < 50)
                     throw new InvalidOperationException("Event reordering requires processing lag at least of 50ms");
             }
-            if (_options.EmitStateUpdated && !config.EmitEventEnabled)
-                throw new InvalidOperationException(
-                    "EmitStateUpdated requires EmitEventEnabled mode");
         }
 
     }

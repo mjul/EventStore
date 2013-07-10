@@ -25,6 +25,8 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 // 
+
+using System.Security.Principal;
 using EventStore.Core.Data;
 using EventStore.Core.TransactionLog.LogRecords;
 
@@ -34,7 +36,7 @@ namespace EventStore.Core.Services.Storage.ReaderIndex
     {
         long LastCommitPosition { get; }
 
-        void Build();
+        void Init(long writerCheckpoint, long buildToPosition);
         void Commit(CommitLogRecord record);
         ReadIndexStats GetStatistics();
         
@@ -46,6 +48,7 @@ namespace EventStore.Core.Services.Storage.ReaderIndex
 
         bool IsStreamDeleted(string streamId);
         int GetLastStreamEventNumber(string streamId);
+        StreamAccessResult CheckStreamAccess(string streamId, StreamAccessType streamAccessType, IPrincipal user);
         StreamMetadata GetStreamMetadata(string streamId);
 
         CommitCheckResult CheckCommitStartingAt(long transactionPosition, long commitPosition);

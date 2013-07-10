@@ -40,12 +40,12 @@ namespace EventStore.Projections.Core.Services.Processing
             _handler = handler;
         }
 
-        public override string GetStatePartition(ProjectionSubscriptionMessage.CommittedEventReceived @event)
+        public override string GetStatePartition(EventReaderSubscriptionMessage.CommittedEventReceived @event)
         {
             return _handler.GetStatePartition(
-                @event.CheckpointTag, @event.EventStreamId, @event.Data.EventType, @event.EventCategory,
-                @event.Data.EventId, @event.EventSequenceNumber, Encoding.UTF8.GetString(@event.Data.Metadata),
-                Encoding.UTF8.GetString(@event.Data.Data));
+                @event.CheckpointTag, @event.Data.EventStreamId, @event.Data.EventType, @event.EventCategory,
+                @event.Data.EventId, @event.Data.EventSequenceNumber, @event.Data.Metadata,
+                @event.Data.Data);
         }
     }
 }

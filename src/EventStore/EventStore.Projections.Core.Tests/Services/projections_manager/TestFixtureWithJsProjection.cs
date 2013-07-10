@@ -36,7 +36,6 @@ using NUnit.Framework;
 
 namespace EventStore.Projections.Core.Tests.Services.projections_manager
 {
-    [MightyMooseIgnore]
     public abstract class TestFixtureWithJsProjection
     {
         private ProjectionStateHandlerFactory _stateHandlerFactory;
@@ -55,7 +54,7 @@ namespace EventStore.Projections.Core.Tests.Services.projections_manager
             _logged = new List<string>();
             _stateHandlerFactory = new ProjectionStateHandlerFactory();
             _stateHandler = _stateHandlerFactory.Create(
-                "JS", _projection, s =>
+                "JS", _projection, logger: s =>
                     {
                         if (!s.StartsWith("P:")) _logged.Add(s);
                         else Console.WriteLine(s);
@@ -116,6 +115,11 @@ namespace EventStore.Projections.Core.Tests.Services.projections_manager
         public bool ByCustomParititions
         {
             get { return _byCustomPartitions; }
+        }
+
+        public bool DefinesStateTransform
+        {
+            get { return _definesStateTransform; }
         }
 
         public QuerySourceOptions Options 

@@ -31,47 +31,40 @@ using System.IO;
 using System.Net;
 using System.Text;
 using EventStore.ClientAPI.Common.Utils;
+using EventStore.ClientAPI.SystemData;
 
 namespace EventStore.ClientAPI.Transport.Http
 {
     internal class HttpAsyncClient
     {
+        private static readonly UTF8Encoding UTF8NoBom = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
+
         static HttpAsyncClient()
         {
             ServicePointManager.MaxServicePointIdleTime = 10000;
             ServicePointManager.DefaultConnectionLimit = 800;
         }
 
-        public void Get(string url, Action<HttpResponse> onSuccess, Action<Exception> onException)
+        private readonly ILogger _log;
+
+        public HttpAsyncClient(ILogger log)
+        {
+            Ensure.NotNull(log, "log");
+            _log = log;
+        }
+
+        public void Get(string url, UserCredentials userCredentials,
+                        Action<HttpResponse> onSuccess, Action<Exception> onException)
         {
             Ensure.NotNull(url, "url");
             Ensure.NotNull(onSuccess, "onSuccess");
             Ensure.NotNull(onException, "onException");
 
-            Receive(HttpMethod.Get, url, onSuccess, onException);
+            Receive(HttpMethod.Get, url, userCredentials, onSuccess, onException);
         }
 
-        public void Post(string url, string body, string contentType, Action<HttpResponse> onSuccess, Action<Exception> onException)
-        {
-            Ensure.NotNull(url, "url");
-            Ensure.NotNull(body, "body");
-            Ensure.NotNull(contentType, "contentType");
-            Ensure.NotNull(onSuccess, "onSuccess");
-            Ensure.NotNull(onException, "onException");
-
-            Send(HttpMethod.Post, url, body, contentType, onSuccess, onException);
-        }
-
-        public void Delete(string url, Action<HttpResponse> onSuccess, Action<Exception> onException)
-        {
-            Ensure.NotNull(url, "url");
-            Ensure.NotNull(onSuccess, "onSuccess");
-            Ensure.NotNull(onException, "onException");
-
-            Receive(HttpMethod.Delete, url, onSuccess, onException);
-        }
-
-        public void Put(string url, string body, string contentType, Action<HttpResponse> onSuccess, Action<Exception> onException)
+        public void Post(string url, string body, string contentType, UserCredentials userCredentials,
+                         Action<HttpResponse> onSuccess, Action<Exception> onException)
         {
             Ensure.NotNull(url, "url");
             Ensure.NotNull(body, "body");
@@ -79,10 +72,33 @@ namespace EventStore.ClientAPI.Transport.Http
             Ensure.NotNull(onSuccess, "onSuccess");
             Ensure.NotNull(onException, "onException");
 
-            Send(HttpMethod.Put, url, body, contentType, onSuccess, onException);
+            Send(HttpMethod.Post, url, body, contentType, userCredentials, onSuccess, onException);
         }
 
-        private void Receive(string method, string url, Action<HttpResponse> onSuccess, Action<Exception> onException)
+        public void Delete(string url, UserCredentials userCredentials,
+                           Action<HttpResponse> onSuccess, Action<Exception> onException)
+        {
+            Ensure.NotNull(url, "url");
+            Ensure.NotNull(onSuccess, "onSuccess");
+            Ensure.NotNull(onException, "onException");
+
+            Receive(HttpMethod.Delete, url, userCredentials, onSuccess, onException);
+        }
+
+        public void Put(string url, string body, string contentType, UserCredentials userCredentials,
+                        Action<HttpResponse> onSuccess, Action<Exception> onException)
+        {
+            Ensure.NotNull(url, "url");
+            Ensure.NotNull(body, "body");
+            Ensure.NotNull(contentType, "contentType");
+            Ensure.NotNull(onSuccess, "onSuccess");
+            Ensure.NotNull(onException, "onException");
+
+            Send(HttpMethod.Put, url, body, contentType, userCredentials, onSuccess, onException);
+        }
+
+        private void Receive(string method, string url, UserCredentials userCredentials,
+                             Action<HttpResponse> onSuccess, Action<Exception> onException)
         {
             var request = (HttpWebRequest)WebRequest.Create(url);
 
@@ -94,14 +110,17 @@ namespace EventStore.ClientAPI.Transport.Http
             request.KeepAlive = true;
             request.Pipelined = true;
 #endif
+            if (userCredentials != null)
+                AddAuthenticationHeader(request, userCredentials);
 
-            request.BeginGetResponse(ResponseAcquired, new ClientOperationState(request, onSuccess, onException));
+            request.BeginGetResponse(ResponseAcquired, new ClientOperationState(_log, request, onSuccess, onException));
         }
 
-        private void Send(string method, string url, string body, string contentType, Action<HttpResponse> onSuccess, Action<Exception> onException)
+        private void Send(string method, string url, string body, string contentType, UserCredentials userCredentials,
+                          Action<HttpResponse> onSuccess, Action<Exception> onException)
         {
             var request = (HttpWebRequest)WebRequest.Create(url);
-            var bodyBytes = Encoding.UTF8.GetBytes(body);
+            var bodyBytes = UTF8NoBom.GetBytes(body);
 
             request.Method = method;
             request.KeepAlive = true;
@@ -109,11 +128,21 @@ namespace EventStore.ClientAPI.Transport.Http
             request.ContentLength = bodyBytes.Length;
             request.ContentType = contentType;
 
-            var state = new ClientOperationState(request, onSuccess, onException)
-            {
-                InputStream = new MemoryStream(bodyBytes)
-            };
+            if (userCredentials != null)
+                AddAuthenticationHeader(request, userCredentials);
+
+            var state = new ClientOperationState(_log, request, onSuccess, onException);
+            state.InputStream = new MemoryStream(bodyBytes);
+
             request.BeginGetRequestStream(GotRequestStream, state);
+        }
+
+        private void AddAuthenticationHeader(HttpWebRequest request, UserCredentials userCredentials)
+        {
+            Ensure.NotNull(userCredentials, "userCredentials");
+            var httpAuthentication = string.Format("{0}:{1}", userCredentials.Login, userCredentials.Password);
+            var encodedCredentials = Convert.ToBase64String(Helper.UTF8NoBom.GetBytes(httpAuthentication));
+            request.Headers.Add("Authorization", string.Format("Basic {0}", encodedCredentials));
         }
 
         private void ResponseAcquired(IAsyncResult ar)
@@ -123,9 +152,7 @@ namespace EventStore.ClientAPI.Transport.Http
             {
                 var response = (HttpWebResponse)state.Request.EndGetResponseExtended(ar);
                 var networkStream = response.GetResponseStream();
-
-                if (networkStream == null)
-                    throw new ArgumentNullException("networkStream", "Response stream was null");
+                if (networkStream == null) throw new Exception("Response stream was null.");
 
                 state.Response = new HttpResponse(response);
                 state.InputStream = networkStream;
@@ -137,7 +164,7 @@ namespace EventStore.ClientAPI.Transport.Http
             }
             catch (Exception e)
             {
-                state.DisposeIOStreams();
+                state.Dispose();
                 state.OnError(e);
             }
         }
@@ -149,16 +176,16 @@ namespace EventStore.ClientAPI.Transport.Http
 
             if (copier.Error != null)
             {
-                state.DisposeIOStreams();
+                state.Dispose();
                 state.OnError(copier.Error);
                 return;
             }
 
             state.OutputStream.Seek(0, SeekOrigin.Begin);
             var memStream = (MemoryStream)state.OutputStream;
-            state.Response.Body = Encoding.UTF8.GetString(memStream.GetBuffer(), 0, (int)memStream.Length);
+            state.Response.Body = UTF8NoBom.GetString(memStream.GetBuffer(), 0, (int)memStream.Length);
 
-            state.DisposeIOStreams();
+            state.Dispose();
             state.OnSuccess(state.Response);
         }
 
@@ -175,7 +202,7 @@ namespace EventStore.ClientAPI.Transport.Http
             }
             catch (Exception e)
             {
-                state.DisposeIOStreams();
+                state.Dispose();
                 state.OnError(e);
             }
         }
@@ -188,12 +215,12 @@ namespace EventStore.ClientAPI.Transport.Http
 
             if (copier.Error != null)
             {
-                state.DisposeIOStreams();
+                state.Dispose();
                 state.OnError(copier.Error);
                 return;
             }
 
-            state.DisposeIOStreams();
+            state.Dispose();
             httpRequest.BeginGetResponse(ResponseAcquired, state);
         }
     }

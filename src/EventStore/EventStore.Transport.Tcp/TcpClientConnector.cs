@@ -28,6 +28,7 @@
 using System;
 using System.Net;
 using System.Net.Sockets;
+using EventStore.Common.Utils;
 
 namespace EventStore.Transport.Tcp
 {
@@ -50,25 +51,42 @@ namespace EventStore.Transport.Tcp
             return socketArgs;
         }
 
-        public TcpConnection ConnectTo(IPEndPoint remoteEndPoint, 
-                                       Action<TcpConnection> onConnectionEstablished = null,
-                                       Action<TcpConnection, SocketError> onConnectionFailed = null)
+        public ITcpConnection ConnectTo(Guid connectionId, 
+                                        IPEndPoint remoteEndPoint, 
+                                        Action<ITcpConnection> onConnectionEstablished = null,
+                                        Action<ITcpConnection, SocketError> onConnectionFailed = null,
+                                        bool verbose = true)
         {
-            if (remoteEndPoint == null) 
-                throw new ArgumentNullException("remoteEndPoint");
-            return TcpConnection.CreateConnectingTcpConnection(remoteEndPoint, this, onConnectionEstablished, onConnectionFailed);
+            Ensure.NotNull(remoteEndPoint, "remoteEndPoint");
+            return TcpConnection.CreateConnectingTcpConnection(connectionId, remoteEndPoint, this, onConnectionEstablished, onConnectionFailed, verbose);
+        }
+
+        public ITcpConnection ConnectSslTo(Guid connectionId,
+                                           IPEndPoint remoteEndPoint,
+                                           string targetHost,
+                                           bool validateServer,
+                                           Action<ITcpConnection> onConnectionEstablished = null,
+                                           Action<ITcpConnection, SocketError> onConnectionFailed = null,
+                                           bool verbose = true)
+        {
+            Ensure.NotNull(remoteEndPoint, "remoteEndPoint");
+            return TcpConnectionSsl.CreateConnectingConnection(connectionId,
+                                                               remoteEndPoint,
+                                                               targetHost,
+                                                               validateServer,
+                                                               this,
+                                                               onConnectionEstablished,
+                                                               onConnectionFailed,
+                                                               verbose);
         }
 
         internal void InitConnect(IPEndPoint serverEndPoint,
                                   Action<IPEndPoint, Socket> onConnectionEstablished,
                                   Action<IPEndPoint, SocketError> onConnectionFailed)
         {
-            if (serverEndPoint == null)
-                throw new ArgumentNullException("serverEndPoint");
-            if (onConnectionEstablished == null)
-                throw new ArgumentNullException("onConnectionEstablished");
-            if (onConnectionFailed == null)
-                throw new ArgumentNullException("onConnectionFailed");
+            Ensure.NotNull(serverEndPoint, "serverEndPoint");
+            Ensure.NotNull(onConnectionEstablished, "onConnectionEstablished");
+            Ensure.NotNull(onConnectionFailed, "onConnectionFailed");
 
             var socketArgs = _connectSocketArgsPool.Get();
             var connectingSocket = new Socket(serverEndPoint.AddressFamily, SocketType.Stream, ProtocolType.Tcp);

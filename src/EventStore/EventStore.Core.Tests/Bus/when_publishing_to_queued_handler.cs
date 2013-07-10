@@ -32,7 +32,7 @@ using System.Threading;
 using EventStore.Core.Bus;
 using EventStore.Core.Messaging;
 using EventStore.Core.Tests.Bus.Helpers;
-using EventStore.Core.Tests.Helper;
+using EventStore.Core.Tests.Helpers;
 using NUnit.Framework;
 
 namespace EventStore.Core.Tests.Bus
@@ -72,7 +72,7 @@ namespace EventStore.Core.Tests.Bus
             Queue.Publish(new TestMessage());
 
             Consumer.Wait();
-            Assert.That(Consumer.HandledMessages.ContainsSingle<TestMessage>());
+            Assert.IsTrue(Consumer.HandledMessages.ContainsSingle<TestMessage>());
         }
 
         [Test]
@@ -85,40 +85,8 @@ namespace EventStore.Core.Tests.Bus
 
             Consumer.Wait();
 
-            Assert.That(Consumer.HandledMessages.ContainsSingle<TestMessage>() &&
-                        Consumer.HandledMessages.ContainsSingle<TestMessage2>());
-        }
-
-        [Test]
-        public void messages_from_different_threads_they_should_be_all_executed_in_same_one()
-        {
-            Consumer.SetWaitingCount(3);
-
-            int msg1ThreadId = 0, msg2ThreadId = 1, msg3ThreadId = 2;
-
-            var threads = new[] 
-            {
-                new Thread(() => Queue.Publish(new DeferredExecutionTestMessage(() =>{msg1ThreadId = Thread.CurrentThread.ManagedThreadId;}))),
-                new Thread(() => Queue.Publish(new DeferredExecutionTestMessage(() =>{msg2ThreadId = Thread.CurrentThread.ManagedThreadId;}))),
-                new Thread(() => Queue.Publish(new DeferredExecutionTestMessage(() =>{msg3ThreadId = Thread.CurrentThread.ManagedThreadId;})))
-            };
-
-            foreach (var thread in threads)
-            {
-                thread.Start();
-            }
-
-            bool executedOnTime = Consumer.Wait(5000);
-
-            if (!executedOnTime)
-            {
-                foreach (var thread in threads)
-                {
-                    thread.Abort();
-                }
-            }
-
-            Assert.That(msg1ThreadId == msg2ThreadId && msg2ThreadId == msg3ThreadId);
+            Assert.IsTrue(Consumer.HandledMessages.ContainsSingle<TestMessage>());
+            Assert.IsTrue(Consumer.HandledMessages.ContainsSingle<TestMessage2>());
         }
 
         [Test]
@@ -136,40 +104,13 @@ namespace EventStore.Core.Tests.Bus
             Consumer.Wait();
 
             var typedMessages = Consumer.HandledMessages.OfType<TestMessageWithId>().ToArray();
-            Assert.That(typedMessages.Length == 6 &&
-                        typedMessages[0].Id == 4 &&
-                        typedMessages[1].Id == 8 &&
-                        typedMessages[2].Id == 15 &&
-                        typedMessages[3].Id == 16 &&
-                        typedMessages[4].Id == 23 &&
-                        typedMessages[5].Id == 42);
-        }
-
-        [Test]
-        public void message_while_queue_has_hanged_it_should_not_be_executed()
-        {
-            Consumer.SetWaitingCount(2);
-            var waitHandle = new ManualResetEvent(false);
-            try
-            {
-                var firstEvent = new ManualResetEventSlim(false);
-                Queue.Publish(new DeferredExecutionTestMessage(() =>
-                {
-                    firstEvent.Set();
-                    waitHandle.WaitOne();
-                }));
-
-                firstEvent.Wait();
-                Queue.Publish(new TestMessage());
-
-                Assert.That(Consumer.HandledMessages.ContainsNo<TestMessage>());
-            }
-            finally
-            {
-                waitHandle.Set();
-                Consumer.Wait();
-                waitHandle.Dispose();
-            }
+            Assert.AreEqual(6, typedMessages.Length);
+            Assert.AreEqual(4, typedMessages[0].Id);
+            Assert.AreEqual(8, typedMessages[1].Id);
+            Assert.AreEqual(15, typedMessages[2].Id);
+            Assert.AreEqual(16, typedMessages[3].Id);
+            Assert.AreEqual(23, typedMessages[4].Id);
+            Assert.AreEqual(42, typedMessages[5].Id);
         }
     }
 
@@ -209,7 +150,7 @@ namespace EventStore.Core.Tests.Bus
         }
     }
 
-    [TestFixture, Ignore]
+    [TestFixture]
     public class when_publishing_to_queued_handler_threadpool : when_publishing_to_queued_handler
     {
         public when_publishing_to_queued_handler_threadpool()

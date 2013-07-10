@@ -27,8 +27,8 @@
 // 
 
 using System;
+using EventStore.Core.Data;
 using EventStore.Projections.Core.Messages;
-using EventStore.Projections.Core.Services.Processing;
 using NUnit.Framework;
 
 namespace EventStore.Projections.Core.Tests.Services.event_reordering_projection_subscription
@@ -47,7 +47,6 @@ namespace EventStore.Projections.Core.Tests.Services.event_reordering_projection
                     builder.FromStream("a");
                     builder.FromStream("b");
                     builder.IncludeEvent("specific-event");
-                    builder.SetEmitStateUpdated();
                     builder.SetReorderEvents(true);
                     builder.SetProcessingLag(1000); // ms
                 };
@@ -57,21 +56,19 @@ namespace EventStore.Projections.Core.Tests.Services.event_reordering_projection
         {
             _timestamp = DateTime.UtcNow;
             _subscription.Handle(
-                new ProjectionCoreServiceMessage.CommittedEventDistributed(
-                    _projectionCorrelationId, new EventPosition(200, 150), "a", 1, false,
-                    ResolvedEvent.Sample(Guid.NewGuid(), "bad-event-type", false, new byte[0], new byte[0], _timestamp)));
+                ReaderSubscriptionMessage.CommittedEventDistributed.Sample(
+                    _projectionCorrelationId, new TFPos(200, 150), "a", 1, false, Guid.NewGuid(),
+                    "bad-event-type", false, new byte[0], new byte[0], _timestamp));
             _subscription.Handle(
-                new ProjectionCoreServiceMessage.CommittedEventDistributed(
-                    _projectionCorrelationId, new EventPosition(2000, 950), "a", 2, false,
-                    ResolvedEvent.Sample(
-                        Guid.NewGuid(), "bad-event-type", false, new byte[0], new byte[0], _timestamp.AddMilliseconds(1))));
+                ReaderSubscriptionMessage.CommittedEventDistributed.Sample(
+                    _projectionCorrelationId, new TFPos(2000, 950), "a", 2, false, Guid.NewGuid(),
+                    "bad-event-type", false, new byte[0], new byte[0], _timestamp.AddMilliseconds(1)));
             _subscription.Handle(
-                new ProjectionCoreServiceMessage.CommittedEventDistributed(
-                    _projectionCorrelationId, new EventPosition(2100, 2050), "b", 1, false,
-                    ResolvedEvent.Sample(
-                        Guid.NewGuid(), "bad-event-type", false, new byte[0], new byte[0], _timestamp.AddMilliseconds(1))));
+                ReaderSubscriptionMessage.CommittedEventDistributed.Sample(
+                    _projectionCorrelationId, new TFPos(2100, 2050), "b", 1, false, Guid.NewGuid(),
+                    "bad-event-type", false, new byte[0], new byte[0], _timestamp.AddMilliseconds(1)));
             _subscription.Handle(
-                new ProjectionCoreServiceMessage.EventReaderIdle(
+                new ReaderSubscriptionMessage.EventReaderIdle(
                     _projectionCorrelationId, _timestamp.AddMilliseconds(1100)));
         }
 

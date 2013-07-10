@@ -34,40 +34,18 @@ namespace EventStore.Projections.Core.Services.Processing
 {
     public class PartitionStateCache
     {
-        public class State
-        {
-            private readonly string _state;
-            private readonly CheckpointTag _causedBy;
-
-            public State(string state, CheckpointTag causedBy)
-            {
-                _state = state;
-                _causedBy = causedBy;
-            }
-
-            public string Data
-            {
-                get { return _state; }
-            }
-
-            public CheckpointTag CausedBy
-            {
-                get { return _causedBy; }
-            }
-        }
-
         private readonly int _maxCachedPartitions;
 
-        private readonly List<Tuple<CheckpointTag, string>> _cacheOrder = new List<Tuple<CheckpointTag, string>>();
+        private readonly LinkedList<Tuple<CheckpointTag, string>> _cacheOrder = new LinkedList<Tuple<CheckpointTag, string>>();
 
-        private readonly Dictionary<string, Tuple<State, CheckpointTag>> _partitionStates =
-            new Dictionary<string, Tuple<State, CheckpointTag>>();
+        private readonly Dictionary<string, Tuple<PartitionState, CheckpointTag>> _partitionStates =
+            new Dictionary<string, Tuple<PartitionState, CheckpointTag>>();
         private int _cachedItemCount;
 
         private CheckpointTag _unlockedBefore;
         private readonly CheckpointTag _zeroPosition;
 
-        public PartitionStateCache(CheckpointTag zeroPosition, int maxCachedPartitions = 1000)
+        public PartitionStateCache(CheckpointTag zeroPosition, int maxCachedPartitions = 4000)
         {
             _zeroPosition = zeroPosition;
             _unlockedBefore = zeroPosition;
@@ -88,7 +66,7 @@ namespace EventStore.Projections.Core.Services.Processing
             _unlockedBefore = _zeroPosition;
         }
 
-        public void CacheAndLockPartitionState(string partition, State data, CheckpointTag at)
+        public void CacheAndLockPartitionState(string partition, PartitionState data, CheckpointTag at)
         {
             if (partition == null) throw new ArgumentNullException("partition");
             if (data == null) throw new ArgumentNullException("data");
@@ -98,11 +76,11 @@ namespace EventStore.Projections.Core.Services.Processing
             _cachedItemCount = _partitionStates.Count;
 
             if (!string.IsNullOrEmpty(partition)) // cached forever - for root state
-                _cacheOrder.Add(Tuple.Create(at, partition));
+                _cacheOrder.AddLast(Tuple.Create(at, partition));
             CleanUp();
         }
 
-        public void CachePartitionState(string partition, State data)
+        public void CachePartitionState(string partition, PartitionState data)
         {
             if (partition == null) throw new ArgumentNullException("partition");
             if (data == null) throw new ArgumentNullException("data");
@@ -111,14 +89,14 @@ namespace EventStore.Projections.Core.Services.Processing
             _partitionStates[partition] = Tuple.Create(data, _zeroPosition);
             _cachedItemCount = _partitionStates.Count;
 
-            _cacheOrder.Insert(0, Tuple.Create(_zeroPosition, partition));
+            _cacheOrder.AddFirst(Tuple.Create(_zeroPosition, partition));
             CleanUp();
         }
 
-        public State TryGetAndLockPartitionState(string partition, CheckpointTag lockAt)
+        public PartitionState TryGetAndLockPartitionState(string partition, CheckpointTag lockAt)
         {
             if (partition == null) throw new ArgumentNullException("partition");
-            Tuple<State, CheckpointTag> stateData;
+            Tuple<PartitionState, CheckpointTag> stateData;
             if (!_partitionStates.TryGetValue(partition, out stateData))
                 return null;
             EnsureCanLockPartitionAt(partition, lockAt);
@@ -132,23 +110,23 @@ namespace EventStore.Projections.Core.Services.Processing
             _cachedItemCount = _partitionStates.Count;
 
             if (!string.IsNullOrEmpty(partition)) // cached forever - for root state
-            _cacheOrder.Add(Tuple.Create(lockAt, partition));
+            _cacheOrder.AddLast(Tuple.Create(lockAt, partition));
             CleanUp();
             return stateData.Item1;
         }
 
-        public State TryGetPartitionState(string partition)
+        public PartitionState TryGetPartitionState(string partition)
         {
             if (partition == null) throw new ArgumentNullException("partition");
-            Tuple<State, CheckpointTag> stateData;
+            Tuple<PartitionState, CheckpointTag> stateData;
             if (!_partitionStates.TryGetValue(partition, out stateData))
                 return null;
             return stateData.Item1;
         }
 
-        public State GetLockedPartitionState(string partition)
+        public PartitionState GetLockedPartitionState(string partition)
         {
-            Tuple<State, CheckpointTag> stateData;
+            Tuple<PartitionState, CheckpointTag> stateData;
             if (!_partitionStates.TryGetValue(partition, out stateData))
             {
                 throw new InvalidOperationException(
@@ -177,8 +155,8 @@ namespace EventStore.Projections.Core.Services.Processing
                 Tuple<CheckpointTag, string> top = _cacheOrder.FirstOrDefault();
                 if (top.Item1 >= _unlockedBefore)
                     break; // other entries were locked after the checkpoint (or almost .. order is not very strong)
-                _cacheOrder.RemoveAt(0);
-                Tuple<State, CheckpointTag> entry;
+                _cacheOrder.RemoveFirst();
+                Tuple<PartitionState, CheckpointTag> entry;
                 if (!_partitionStates.TryGetValue(top.Item2, out entry))
                     continue; // already removed
                 if (entry.Item2 >= _unlockedBefore)

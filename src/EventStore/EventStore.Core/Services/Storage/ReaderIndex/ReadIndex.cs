@@ -25,16 +25,11 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 // 
-
-#if DEBUG
-//#define CHECK_COMMIT_DUPLICATES
-#endif
-
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
-using System.Text;
+using System.Security.Principal;
 using System.Threading;
 using EventStore.Common.Log;
 using EventStore.Common.Utils;
@@ -44,9 +39,10 @@ using EventStore.Core.DataStructures;
 using EventStore.Core.Index;
 using EventStore.Core.Index.Hashes;
 using EventStore.Core.Messages;
+using EventStore.Core.Settings;
 using EventStore.Core.TransactionLog;
+using EventStore.Core.TransactionLog.Chunks;
 using EventStore.Core.TransactionLog.LogRecords;
-using Newtonsoft.Json.Linq;
 
 namespace EventStore.Core.Services.Storage.ReaderIndex
 {
@@ -57,17 +53,19 @@ namespace EventStore.Core.Services.Storage.ReaderIndex
 
         public long LastCommitPosition { get { return Interlocked.Read(ref _lastCommitPosition); } }
 
-        private long _succReadCount;
-        private long _failedReadCount;
+        private long _hashCollisions;
+        private long _cachedStreamInfo;
+        private long _notCachedStreamInfo;
+        private long _cachedTransInfo;
+        private long _notCachedTransInfo;
 
-        private readonly Common.Concurrent.ConcurrentStack<ITransactionFileReader> _readers = new Common.Concurrent.ConcurrentStack<ITransactionFileReader>();
-        private readonly Common.Concurrent.ConcurrentStack<ITransactionFileSequentialReader> _seqReaders = new Common.Concurrent.ConcurrentStack<ITransactionFileSequentialReader>();
+        private readonly ObjectPool<ITransactionFileReader> _readers;
 
         private readonly ITableIndex _tableIndex;
         private readonly IHasher _hasher;
         private readonly IPublisher _bus;
         private readonly ILRUCache<string, StreamCacheInfo> _streamInfoCache;
-        private readonly ILRUCache<long, TransactionInfo> _transactionInfoCache = new LRUCache<long, TransactionInfo>(50000); 
+        private readonly ILRUCache<long, TransactionInfo> _transactionInfoCache = new LRUCache<long, TransactionInfo>(ESConsts.TransactionMetadataCacheCapacity); 
 
         private long _persistedPrepareCheckpoint = -1;
         private long _persistedCommitCheckpoint = -1;
@@ -75,88 +73,71 @@ namespace EventStore.Core.Services.Storage.ReaderIndex
         private bool _indexRebuild = true;
 
         private readonly BoundedCache<Guid, Tuple<string, int>> _committedEvents = 
-            new BoundedCache<Guid, Tuple<string, int>>(int.MaxValue, 10*1024*1024, x => 16 + 4 + 2*x.Item1.Length);
+            new BoundedCache<Guid, Tuple<string, int>>(int.MaxValue, ESConsts.CommitedEventsMemCacheLimit, x => 16 + 4 + 2*x.Item1.Length + IntPtr.Size);
+
+        private readonly bool _additionalCommitChecks;
+        private readonly StreamMetadata _metastreamMetadata;
 
         public ReadIndex(IPublisher bus,
-                         int readerCount,
-                         Func<ITransactionFileSequentialReader> seqReaderFactory,
+                         int initialReaderCount,
+                         int maxReaderCount,
                          Func<ITransactionFileReader> readerFactory,
                          ITableIndex tableIndex,
                          IHasher hasher,
-                         ILRUCache<string, StreamCacheInfo> streamInfoCache)
+                         ILRUCache<string, StreamCacheInfo> streamInfoCache,
+                         bool additionalCommitChecks,
+                         int metastreamMaxCount)
         {
             Ensure.NotNull(bus, "bus");
-            Ensure.Positive(readerCount, "readerCount");
-            Ensure.NotNull(seqReaderFactory, "seqReaderFactory");
+            Ensure.Positive(initialReaderCount, "initialReaderCount");
+            Ensure.Positive(maxReaderCount, "maxReaderCount");
+            if (initialReaderCount > maxReaderCount)
+                throw new ArgumentOutOfRangeException("initialReaderCount", "initialReaderCount is greater than maxReaderCount.");
             Ensure.NotNull(readerFactory, "readerFactory");
             Ensure.NotNull(tableIndex, "tableIndex");
             Ensure.NotNull(hasher, "hasher");
             Ensure.NotNull(streamInfoCache, "streamInfoCache");
+            Ensure.Positive(metastreamMaxCount, "metastreamMaxCount");
 
-            _bus = bus;
             _tableIndex = tableIndex;
             _hasher = hasher;
+            _bus = bus;
             _streamInfoCache = streamInfoCache;
 
-            for (int i = 0; i < readerCount; ++i)
-            {
-                _seqReaders.Push(seqReaderFactory());
-                _readers.Push(readerFactory());
-            }
+            _readers = new ObjectPool<ITransactionFileReader>("ReadIndex readers pool", initialReaderCount, maxReaderCount, readerFactory);
+
+            _additionalCommitChecks = additionalCommitChecks;
+            _metastreamMetadata = new StreamMetadata(metastreamMaxCount, null, null, null);
         }
 
-        private ITransactionFileReader GetReader()
+        public void Init(long writerCheckpoint, long buildToPosition)
         {
-            ITransactionFileReader reader;
-            if (!_readers.TryPop(out reader))
-                throw new InvalidOperationException("Unable to acquire reader in ReadIndex.");
-            return reader;
-        }
+            Log.Info("TableIndex initialization...");
 
-        private ITransactionFileSequentialReader GetSeqReader()
-        {
-            ITransactionFileSequentialReader seqReader;
-            if (!_seqReaders.TryPop(out seqReader))
-                throw new InvalidOperationException("Unable to acquire sequential reader in ReadIndex.");
-            return seqReader;
-        }
-
-        private void ReturnReader(ITransactionFileReader reader)
-        {
-            _readers.Push(reader);
-        }
-
-        private void ReturnSeqReader(ITransactionFileSequentialReader seqReader)
-        {
-            _seqReaders.Push(seqReader);
-        }
-
-        public void Build()
-        {
-            _tableIndex.Initialize();
+            _tableIndex.Initialize(writerCheckpoint);
             _persistedPrepareCheckpoint = _tableIndex.PrepareCheckpoint;
             _persistedCommitCheckpoint = _tableIndex.CommitCheckpoint;
             _lastCommitPosition = _tableIndex.CommitCheckpoint;
 
-            foreach (var rdr in _readers)
-            {
-                rdr.Open();
-            }
-            foreach (var seqRdr in _seqReaders)
-            {
-                seqRdr.Open();
-            }
+            if (_lastCommitPosition >= writerCheckpoint)
+                throw new Exception(string.Format("_lastCommitPosition {0} >= writerCheckpoint {1}", _lastCommitPosition, writerCheckpoint));
+
+            var startTime = DateTime.UtcNow;
+            var lastTime = DateTime.UtcNow;
+            var reportPeriod = TimeSpan.FromSeconds(5);
+
+            Log.Info("ReadIndex building...");
 
             _indexRebuild = true;
-
-            var seqReader = GetSeqReader();
+            var seqReader = _readers.Get();
             try
             {
-                seqReader.Reposition(Math.Max(0, _persistedCommitCheckpoint));
+                var startPosition = Math.Max(0, _persistedCommitCheckpoint);
+                seqReader.Reposition(startPosition);
 
                 long processed = 0;
                 SeqReadResult result;
-                while ((result = seqReader.TryReadNext()).Success)
+                while ((result = seqReader.TryReadNext()).Success && result.LogRecord.LogPosition < buildToPosition)
                 {
                     switch (result.LogRecord.RecordType)
                     {
@@ -165,18 +146,26 @@ namespace EventStore.Core.Services.Storage.ReaderIndex
                         case LogRecordType.Commit:
                             Commit((CommitLogRecord)result.LogRecord);
                             break;
+                        case LogRecordType.System:
+                            break;
                         default:
-                            throw new ArgumentOutOfRangeException("recordType", string.Format("Unknown RecordType: {0}", result.LogRecord.RecordType));
+                            throw new Exception(string.Format("Unknown RecordType: {0}", result.LogRecord.RecordType));
                     }
 
                     processed += 1;
-                    if (processed % 100000 == 0)
-                        Log.Debug("ReadIndex Rebuilding: processed {0} records.", processed);
+                    if (DateTime.UtcNow - lastTime > reportPeriod || processed % 100000 == 0)
+                    {
+                        Log.Debug("ReadIndex Rebuilding: processed {0} records ({1:0.0}%).",
+                                  processed,
+                                  (result.RecordPostPosition - startPosition)*100.0/(buildToPosition - startPosition));
+                        lastTime = DateTime.UtcNow;
+                    }
                 }
+                Log.Debug("ReadIndex Rebuilding Done: total processed {0} records, time elapsed: {1}.", processed, DateTime.UtcNow - startTime);
             }
             finally
             {
-                ReturnSeqReader(seqReader);
+                _readers.Return(seqReader);
             }
 
             _indexRebuild = false;
@@ -188,64 +177,34 @@ namespace EventStore.Core.Services.Storage.ReaderIndex
             if (commit.LogPosition < lastCommitPosition || (commit.LogPosition == lastCommitPosition && !_indexRebuild))
                 return;  // already committed
 
-            bool first = true;
-            int eventNumber = -1;
             uint streamHash = 0;
             string streamId = null;
-
+            int eventNumber = int.MinValue;
             var indexEntries = new List<IndexEntry>();
             var prepares = new List<PrepareLogRecord>();
 
             foreach (var prepare in GetTransactionPrepares(commit.TransactionPosition, commit.LogPosition))
             {
-                if (first)
+                if ((prepare.Flags & (PrepareFlags.StreamDelete | PrepareFlags.Data)) == 0)
+                    continue;
+
+                if (streamId == null)
                 {
-                    streamHash = _hasher.Hash(prepare.EventStreamId);
                     streamId = prepare.EventStreamId;
-                    first = false;
+                    streamHash = _hasher.Hash(prepare.EventStreamId);
                 }
                 else
                     Debug.Assert(prepare.EventStreamId == streamId);
 
-                bool addToIndex = false;
-                if ((prepare.Flags & PrepareFlags.StreamDelete) != 0)
-                {
-                    eventNumber = EventNumber.DeletedStream;
-                    _committedEvents.PutRecord(prepare.EventId, Tuple.Create(streamId, eventNumber), throwOnDuplicate: false);
-                    addToIndex = commit.LogPosition > _persistedCommitCheckpoint
+                eventNumber = (prepare.Flags & PrepareFlags.StreamDelete) != 0
+                                  ? EventNumber.DeletedStream
+                                  : commit.FirstEventNumber + prepare.TransactionOffset;
+                _committedEvents.PutRecord(prepare.EventId, Tuple.Create(streamId, eventNumber), throwOnDuplicate: false);
+                
+                var addToIndex = commit.LogPosition > _persistedCommitCheckpoint
                                  || commit.LogPosition == _persistedCommitCheckpoint && prepare.LogPosition > _persistedPrepareCheckpoint;
-                }
-                else if ((prepare.Flags & PrepareFlags.Data) != 0)
-                {
-                    eventNumber = commit.FirstEventNumber + prepare.TransactionOffset;
-                    _committedEvents.PutRecord(prepare.EventId, Tuple.Create(streamId, eventNumber), throwOnDuplicate: false);
-                    addToIndex = commit.LogPosition > _persistedCommitCheckpoint
-                                 || commit.LogPosition == _persistedCommitCheckpoint && prepare.LogPosition > _persistedPrepareCheckpoint;
-                }
-
-                // could be just empty prepares for TransactionBegin and TransactionEnd, for instance
-                // or records which are rebuilt but are already in PTables
                 if (addToIndex)
                 {
-#if CHECK_COMMIT_DUPLICATES
-                    long pos;
-                    if (_tableIndex.TryGetOneValue(streamHash, eventNumber, out pos))
-                    {
-                        var res = ((IReadIndex)this).ReadEvent(streamId, eventNumber);
-                        if (res.Result == ReadEventResult.Success)
-                        {
-                            Debugger.Break();
-                            throw new Exception(
-                                string.Format(
-                                    "Trying to add duplicate event #{0} for stream {1}(hash {2})\nCommit: {3}\nPrepare: {4}.",
-                                    eventNumber,
-                                    streamId,
-                                    streamHash,
-                                    commit,
-                                    prepare));
-                        }
-                    }
-#endif
                     indexEntries.Add(new IndexEntry(streamHash, eventNumber, prepare.LogPosition));
                     prepares.Add(prepare);
                 }
@@ -253,10 +212,29 @@ namespace EventStore.Core.Services.Storage.ReaderIndex
 
             if (indexEntries.Count > 0)
             {
-                _tableIndex.AddEntries(commit.LogPosition, indexEntries); // atomically add a whole bulk of entries
-                for (int i = 0, n = indexEntries.Count; i < n; ++i)
+                if (_additionalCommitChecks)
                 {
-                    _bus.Publish(new StorageMessage.EventCommited(commit.LogPosition, new EventRecord(indexEntries[i].Version, prepares[i])));
+                    CheckStreamVersion(streamId, indexEntries[0].Version, commit);
+                    CheckDuplicateEvents(streamHash, commit, indexEntries, prepares);
+                }
+                _tableIndex.AddEntries(commit.LogPosition, indexEntries); // atomically add a whole bulk of entries
+            }
+
+            if (eventNumber != int.MinValue)
+            {
+                if (eventNumber < 0) throw new Exception(string.Format("EventNumber {0} is incorrect.", eventNumber));
+                
+                _streamInfoCache.Put(streamId,
+                                     key => new StreamCacheInfo(eventNumber, null),
+                                     (key, old) => new StreamCacheInfo(eventNumber, old.Metadata));
+                if (SystemStreams.IsMetastream(streamId))
+                {
+                    // if we are committing to metastream, we need to invalidate metastream cache
+                    // TODO AN: race condition in setting/clearing metadata
+                    // in the meantime GetStreamMetadataCached could be trying to set stale metadata
+                    _streamInfoCache.Put(SystemStreams.OriginalStreamOf(streamId),
+                                         key => new StreamCacheInfo(-1, null),
+                                         (key, old) => new StreamCacheInfo(old.LastEventNumber, null));
                 }
             }
 
@@ -264,22 +242,69 @@ namespace EventStore.Core.Services.Storage.ReaderIndex
             if (Interlocked.CompareExchange(ref _lastCommitPosition, newLastCommitPosition, lastCommitPosition) != lastCommitPosition)
                 throw new Exception("Concurrency error in ReadIndex.Commit: _lastCommitPosition was modified during Commit execution!");
 
-            if (first)
+            for (int i = 0, n = indexEntries.Count; i < n; ++i)
             {
-                // we got here because all prepares of this commit was scavenged, 
-                // so we don't add anything to cache, to table index, anywhere
-                // we just pretend this commit was already processed and scavenged :)
-                return;
+                _bus.Publish(new StorageMessage.EventCommited(commit.LogPosition, new EventRecord(indexEntries[i].Version, prepares[i])));
             }
+        }
 
-            _streamInfoCache.Put(streamId,
-                                 key => new StreamCacheInfo(eventNumber, null),
-                                 (key, old) => new StreamCacheInfo(eventNumber, old.Metadata));
+        private void CheckStreamVersion(string streamId, int newEventNumber, CommitLogRecord commit)
+        {
+            if (newEventNumber == EventNumber.DeletedStream)
+                return;
+
+            var reader = _readers.Get();
+            try
+            {
+                int lastEventNumber = GetLastStreamEventNumberUncached(reader, streamId);
+                if (newEventNumber != lastEventNumber + 1)
+                {
+                    if (Debugger.IsAttached)
+                        Debugger.Break();
+                    else 
+                        throw new Exception(string.Format(
+                            "Commit invariant violation: new event number {0} doesn't correspond to current stream version {1}.\n"
+                            + "Stream ID: {2}.\nCommit: {3}.",
+                            newEventNumber, lastEventNumber, streamId, commit));
+                }
+            }
+            finally
+            {
+                _readers.Return(reader);
+            }
+        }
+
+        private void CheckDuplicateEvents(uint streamHash, CommitLogRecord commit, IList<IndexEntry> indexEntries, IList<PrepareLogRecord> prepares)
+        {
+            var reader = _readers.Get();
+            try
+            {
+                foreach (var indexEntry in _tableIndex.GetRange(streamHash, indexEntries[0].Version, indexEntries[indexEntries.Count-1].Version))
+                {
+                    var res = GetEventRecord(reader, indexEntry);
+                    var prepare = prepares[indexEntry.Version - indexEntries[0].Version];
+                    if (res.Success && res.Record.EventStreamId == prepare.EventStreamId)
+                    {
+                        if (Debugger.IsAttached)
+                            Debugger.Break();
+                        else
+                        {
+                            throw new Exception(string.Format(
+                                "Trying to add duplicate event #{0} to stream {1} (hash {2})\nCommit: {3}\nPrepare: {4}\nPresent record: {5}.",
+                                indexEntry.Version, prepare.EventStreamId, streamHash, commit, prepare, res.Record));
+                        }
+                    }
+                }
+            }
+            finally
+            {
+                _readers.Return(reader);
+            }
         }
 
         private IEnumerable<PrepareLogRecord> GetTransactionPrepares(long transactionPos, long commitPos)
         {
-            var seqReader = GetSeqReader();
+            var seqReader = _readers.Get();
             try
             {
                 seqReader.Reposition(transactionPos);
@@ -302,52 +327,55 @@ namespace EventStore.Core.Services.Storage.ReaderIndex
             }
             finally
             {
-                ReturnSeqReader(seqReader);
+                _readers.Return(seqReader);
             }
         }
 
         IndexReadEventResult IReadIndex.ReadEvent(string streamId, int eventNumber)
         {
-            var reader = GetReader();
+            var reader = _readers.Get();
             try
             {
                 return ReadEventInternal(reader, streamId, eventNumber);
             }
             finally
             {
-                ReturnReader(reader);
+                _readers.Return(reader);
             }
         }
 
-        private IndexReadEventResult ReadEventInternal(ITransactionFileReader reader, string streamId, int version)
+        private IndexReadEventResult ReadEventInternal(ITransactionFileReader reader, string streamId, int eventNumber)
         {
             Ensure.NotNull(streamId, "streamId");
-            Ensure.Nonnegative(version, "eventNumber");
+            if (eventNumber < -1) throw new ArgumentOutOfRangeException("eventNumber");
 
             var lastEventNumber = GetLastStreamEventNumberCached(reader, streamId);
             if (lastEventNumber == EventNumber.DeletedStream)
-                return new IndexReadEventResult(ReadEventResult.StreamDeleted);
+                return new IndexReadEventResult(ReadEventResult.StreamDeleted, null);
             if (lastEventNumber == ExpectedVersion.NoStream)
-                return new IndexReadEventResult(ReadEventResult.NoStream);
+                return new IndexReadEventResult(ReadEventResult.NoStream, null);
 
+            if (eventNumber == -1) 
+                eventNumber = lastEventNumber;
+            
             var metadata = GetStreamMetadataCached(reader, streamId);
             if (metadata.MaxCount.HasValue)
             {
                 var minEventNumber = lastEventNumber - metadata.MaxCount.Value + 1;
-                if (version < minEventNumber || version > lastEventNumber)
-                    return new IndexReadEventResult(ReadEventResult.NotFound);
+                if (eventNumber < minEventNumber || eventNumber > lastEventNumber)
+                    return new IndexReadEventResult(ReadEventResult.NotFound, metadata);
             }
 
             EventRecord record;
-            var success = GetStreamRecord(reader, streamId, version, out record);
+            var success = GetStreamRecord(reader, streamId, eventNumber, out record);
             if (success)
             {
                 if (metadata.MaxAge.HasValue && record.TimeStamp < DateTime.UtcNow - metadata.MaxAge.Value)
-                    return new IndexReadEventResult(ReadEventResult.NotFound);
-                return new IndexReadEventResult(ReadEventResult.Success, record);
+                    return new IndexReadEventResult(ReadEventResult.NotFound, metadata);
+                return new IndexReadEventResult(ReadEventResult.Success, record, metadata);
             }
 
-            return new IndexReadEventResult(ReadEventResult.NotFound);
+            return new IndexReadEventResult(ReadEventResult.NotFound, metadata);
         }
 
         IndexReadStreamResult IReadIndex.ReadStreamEventsForward(string streamId, int fromEventNumber, int maxCount)
@@ -357,7 +385,7 @@ namespace EventStore.Core.Services.Storage.ReaderIndex
             Ensure.Positive(maxCount, "maxCount");
 
             var streamHash = _hasher.Hash(streamId);
-            var reader = GetReader();
+            var reader = _readers.Get();
             try
             {
                 var lastEventNumber = GetLastStreamEventNumberCached(reader, streamId);
@@ -374,7 +402,8 @@ namespace EventStore.Core.Services.Storage.ReaderIndex
                 {
                     var minEventNumber = lastEventNumber - metadata.MaxCount.Value + 1;
                     if (endEventNumber < minEventNumber)
-                        return new IndexReadStreamResult(fromEventNumber, maxCount, EmptyRecords, minEventNumber, lastEventNumber, isEndOfStream: false);
+                        return new IndexReadStreamResult(fromEventNumber, maxCount, EmptyRecords, metadata,
+                                                         minEventNumber, lastEventNumber, isEndOfStream: false);
                     startEventNumber = Math.Max(startEventNumber, minEventNumber);
                 }
 
@@ -395,11 +424,12 @@ namespace EventStore.Core.Services.Storage.ReaderIndex
                 if (records.Length > 0)
                     nextEventNumber = records[records.Length - 1].EventNumber + 1;
                 var isEndOfStream = endEventNumber >= lastEventNumber;
-                return new IndexReadStreamResult(endEventNumber, maxCount, records, nextEventNumber, lastEventNumber, isEndOfStream);
+                return new IndexReadStreamResult(endEventNumber, maxCount, records, metadata,
+                                                 nextEventNumber, lastEventNumber, isEndOfStream);
             }
             finally
             {
-                ReturnReader(reader);
+                _readers.Return(reader);
             }
         }
 
@@ -409,7 +439,7 @@ namespace EventStore.Core.Services.Storage.ReaderIndex
             Ensure.Positive(maxCount, "maxCount");
 
             var streamHash = _hasher.Hash(streamId);
-            var reader = GetReader();
+            var reader = _readers.Get();
             try
             {
                 var lastEventNumber = GetLastStreamEventNumberCached(reader, streamId);
@@ -427,7 +457,8 @@ namespace EventStore.Core.Services.Storage.ReaderIndex
                 {
                     var minEventNumber = lastEventNumber - metadata.MaxCount.Value + 1;
                     if (endEventNumber < minEventNumber)
-                        return new IndexReadStreamResult(fromEventNumber, maxCount, EmptyRecords, -1, lastEventNumber, isEndOfStream: true);
+                        return new IndexReadStreamResult(fromEventNumber, maxCount, EmptyRecords, metadata,
+                                                         -1, lastEventNumber, isEndOfStream: true);
 
                     if (startEventNumber <= minEventNumber)
                     {
@@ -454,11 +485,12 @@ namespace EventStore.Core.Services.Storage.ReaderIndex
                                 || startEventNumber <= lastEventNumber 
                                    && (records.Length == 0 || records[records.Length - 1].EventNumber != startEventNumber);
                 int nextEventNumber = isEndOfStream ? -1 : Math.Min(startEventNumber - 1, lastEventNumber);
-                return new IndexReadStreamResult(endEventNumber, maxCount, records, nextEventNumber, lastEventNumber, isEndOfStream);
+                return new IndexReadStreamResult(endEventNumber, maxCount, records, metadata,
+                                                 nextEventNumber, lastEventNumber, isEndOfStream);
             }
             finally
             {
-                ReturnReader(reader);
+                _readers.Return(reader);
             }
         }
 
@@ -476,25 +508,21 @@ namespace EventStore.Core.Services.Storage.ReaderIndex
                 var res = GetEventRecord(reader, new IndexEntry(streamHash, version, position));
                 if (res.Success && res.Record.EventStreamId == streamId)
                 {
-                    _succReadCount += 1;
                     record = res.Record;
                     return true;
                 }
-                _failedReadCount += 1;
 
                 foreach (var indexEntry in _tableIndex.GetRange(streamHash, version, version))
                 {
+                    Interlocked.Increment(ref _hashCollisions);
                     if (indexEntry.Position == position) // already checked that
                         continue;
-
                     res = GetEventRecord(reader, indexEntry);
                     if (res.Success && res.Record.EventStreamId == streamId)
                     {
-                        _succReadCount += 1;
                         record = res.Record;
                         return true;
                     }
-                    _failedReadCount += 1;
                 }
             }
             record = null;
@@ -528,24 +556,99 @@ namespace EventStore.Core.Services.Storage.ReaderIndex
         {
             Ensure.NotNullOrEmpty(streamId, "streamId");
 
-            var reader = GetReader();
+            var reader = _readers.Get();
             try
             {
                 return GetLastStreamEventNumberCached(reader, streamId);
             }
             finally
             {
-                ReturnReader(reader);
+                _readers.Return(reader);
             }
+        }
+
+        StreamAccessResult IReadIndex.CheckStreamAccess(string streamId, StreamAccessType streamAccessType, IPrincipal user)
+        {
+            var reader = _readers.Get();
+            try
+            {
+                return CheckStreamAccessInternal(reader, streamId, streamAccessType, user);
+            }
+            finally
+            {
+                _readers.Return(reader);
+            }
+        }
+
+        private StreamAccessResult CheckStreamAccessInternal(ITransactionFileReader reader, string streamId, 
+                                                             StreamAccessType streamAccessType, IPrincipal user)
+        {
+            if (SystemStreams.IsMetastream(streamId))
+            {
+                switch (streamAccessType)
+                {
+                    case StreamAccessType.Read:
+                        return CheckStreamAccessInternal(reader, SystemStreams.OriginalStreamOf(streamId), StreamAccessType.MetaRead, user);
+                    case StreamAccessType.Write:
+                        return CheckStreamAccessInternal(reader, SystemStreams.OriginalStreamOf(streamId), StreamAccessType.MetaWrite, user);
+                    case StreamAccessType.Delete:
+                    case StreamAccessType.MetaRead:
+                    case StreamAccessType.MetaWrite:
+                        return StreamAccessResult.Denied;
+                    default:
+                        throw new ArgumentOutOfRangeException("streamAccessType");
+                }
+            }
+
+            if ((streamAccessType == StreamAccessType.Write || streamAccessType == StreamAccessType.Delete)
+                && streamId == SystemStreams.AllStream)
+                return StreamAccessResult.Denied;
+
+            if (user != null && user.IsInRole(SystemUserGroups.Admins))
+                return StreamAccessResult.Granted;
+
+            var meta = GetStreamMetadataCached(reader, streamId);
+            var isSystemStream = SystemStreams.IsSystemStream(streamId);
+            switch (streamAccessType)
+            {
+                case StreamAccessType.Read: 
+                    return CheckRoleAccess(meta.Acl == null ? null : meta.Acl.ReadRole, user, isSystemStream);
+                case StreamAccessType.Write:
+                    return CheckRoleAccess(meta.Acl == null ? null : meta.Acl.WriteRole, user, isSystemStream);
+                case StreamAccessType.Delete:
+                    return CheckRoleAccess(meta.Acl == null ? null : meta.Acl.DeleteRole, user, isSystemStream);
+                case StreamAccessType.MetaRead:
+                    return CheckRoleAccess(meta.Acl == null ? null : meta.Acl.MetaReadRole, user, isSystemStream);
+                case StreamAccessType.MetaWrite:
+                    return CheckRoleAccess(meta.Acl == null ? null : meta.Acl.MetaWriteRole, user, isSystemStream);
+                default: throw new ArgumentOutOfRangeException("streamAccessType");
+            }
+        }
+
+        private StreamAccessResult CheckRoleAccess(string role, IPrincipal user, bool isSystemStream)
+        {
+            if (role == SystemUserGroups.All)
+                return StreamAccessResult.Granted;
+            if (role == null)
+                return isSystemStream ? StreamAccessResult.Denied : StreamAccessResult.Granted;
+            return (user != null && user.IsInRole(role)) ? StreamAccessResult.Granted : StreamAccessResult.Denied;
         }
 
         private int GetLastStreamEventNumberCached(ITransactionFileReader reader, string streamId)
         {
             Ensure.NotNull(streamId, "streamId");
 
+            // if this is metastream -- check if original stream was deleted, if yes -- metastream is deleted as well
+            if (SystemStreams.IsMetastream(streamId) 
+                && GetLastStreamEventNumberCached(reader, SystemStreams.OriginalStreamOf(streamId)) == EventNumber.DeletedStream)
+                return EventNumber.DeletedStream;
+
             StreamCacheInfo streamCacheInfo;
             if (_streamInfoCache.TryGet(streamId, out streamCacheInfo) && streamCacheInfo.LastEventNumber.HasValue)
+            {
+                Interlocked.Increment(ref _cachedStreamInfo);
                 return streamCacheInfo.LastEventNumber.Value;
+            }
 
             var lastEventNumber = GetLastStreamEventNumberUncached(reader, streamId);
             if (lastEventNumber != ExpectedVersion.NoStream)
@@ -562,6 +665,8 @@ namespace EventStore.Core.Services.Storage.ReaderIndex
 
         private int GetLastStreamEventNumberUncached(ITransactionFileReader reader, string streamId)
         {
+            Interlocked.Increment(ref _notCachedStreamInfo);
+
             var streamHash = _hasher.Hash(streamId);
             IndexEntry latestEntry;
             if (!_tableIndex.TryGetLatestEntry(streamHash, out latestEntry))
@@ -579,6 +684,7 @@ namespace EventStore.Core.Services.Storage.ReaderIndex
                 var r = ReadPrepareInternal(reader, indexEntry.Position);
                 if (r.Success && r.Record.EventStreamId == streamId)
                     return indexEntry.Version; // AT LAST!!!
+                Interlocked.Increment(ref _hashCollisions);
             }
             return ExpectedVersion.NoStream; // no such event stream
         }
@@ -587,14 +693,14 @@ namespace EventStore.Core.Services.Storage.ReaderIndex
         {
             Ensure.NotNullOrEmpty(streamId, "streamId");
 
-            var reader = GetReader();
+            var reader = _readers.Get();
             try
             {
                 return GetStreamMetadataCached(reader, streamId);
             }
             finally
             {
-                ReturnReader(reader);
+                _readers.Return(reader);
             }
         }
 
@@ -609,23 +715,23 @@ namespace EventStore.Core.Services.Storage.ReaderIndex
             var records = new List<CommitEventRecord>();
             var nextPos = pos;
             // in case we are at position after which there is no commit at all, in that case we have to force 
-            // PreparePosition to int.MaxValue, so if you decide to read backwards from PrevPos, 
+            // PreparePosition to long.MaxValue, so if you decide to read backwards from PrevPos, 
             // you will receive all prepares.
-            var prevPos = new TFPos(pos.CommitPosition, int.MaxValue);
-            var count = 0;
+            var prevPos = new TFPos(pos.CommitPosition, long.MaxValue);
+            long count = 0;
             bool firstCommit = true;
-            ITransactionFileSequentialReader seqReader = GetSeqReader();
+            ITransactionFileReader reader = _readers.Get();
             try
             {
                 long nextCommitPos = pos.CommitPosition;
                 while (count < maxCount)
                 {
-                    seqReader.Reposition(nextCommitPos);
+                    reader.Reposition(nextCommitPos);
 
                     SeqReadResult result;
                     do
                     {
-                        result = seqReader.TryReadNext();
+                        result = reader.TryReadNext();
                     }
                     while (result.Success && result.LogRecord.RecordType != LogRecordType.Commit); // skip until commit
 
@@ -643,15 +749,15 @@ namespace EventStore.Core.Services.Storage.ReaderIndex
                         prevPos = new TFPos(result.RecordPostPosition, pos.PreparePosition);
                     }
 
-                    seqReader.Reposition(commit.TransactionPosition);
+                    reader.Reposition(commit.TransactionPosition);
                     while (count < maxCount)
                     {
-                        result = seqReader.TryReadNext();
+                        result = reader.TryReadNext();
                         if (!result.Success) // no more records in TF
                             break;
                         // prepare with TransactionEnd could be scavenged already
                         // so we could reach the same commit record. In that case have to stop
-                        if (result.LogRecord.Position >= commit.Position) 
+                        if (result.LogRecord.LogPosition >= commit.LogPosition) 
                             break;
                         if (result.LogRecord.RecordType != LogRecordType.Prepare) 
                             continue;
@@ -663,10 +769,10 @@ namespace EventStore.Core.Services.Storage.ReaderIndex
                         // prepare with useful data or delete tombstone
                         if ((prepare.Flags & (PrepareFlags.Data | PrepareFlags.StreamDelete)) != 0) 
                         {
-                            if (new TFPos(commit.Position, prepare.LogPosition) >= pos)
+                            if (new TFPos(commit.LogPosition, prepare.LogPosition) >= pos)
                             {
                                 var eventRecord = new EventRecord(commit.FirstEventNumber + prepare.TransactionOffset, prepare);
-                                records.Add(new CommitEventRecord(eventRecord, commit.Position));
+                                records.Add(new CommitEventRecord(eventRecord, commit.LogPosition));
                                 count++;
 
                                 // for forward pass position is inclusive, 
@@ -679,12 +785,13 @@ namespace EventStore.Core.Services.Storage.ReaderIndex
                             break;
                     }
                 }
+                var metadata = GetStreamMetadataCached(reader, SystemStreams.AllStream);
+                return new IndexReadAllResult(records, metadata, maxCount, pos, nextPos, prevPos, lastCommitPosition);
             }
             finally
             {
-                ReturnSeqReader(seqReader);
+                _readers.Return(reader);
             }
-            return new IndexReadAllResult(records, maxCount, pos, nextPos, prevPos, lastCommitPosition);
         }
 
         /// <summary>
@@ -701,20 +808,20 @@ namespace EventStore.Core.Services.Storage.ReaderIndex
             // PreparePosition to 0, so if you decide to read backwards from PrevPos, 
             // you will receive all prepares.
             var prevPos = new TFPos(pos.CommitPosition, 0);
-            var count = 0;
+            long count = 0;
             bool firstCommit = true;            
-            ITransactionFileSequentialReader seqReader = GetSeqReader();
+            ITransactionFileReader reader = _readers.Get();
             try
             {
                 long nextCommitPostPos = pos.CommitPosition;
                 while (count < maxCount)
                 {
-                    seqReader.Reposition(nextCommitPostPos);
+                    reader.Reposition(nextCommitPostPos);
                     
                     SeqReadResult result;
                     do
                     {
-                        result = seqReader.TryReadPrev();
+                        result = reader.TryReadPrev();
                     }
                     while (result.Success && result.LogRecord.RecordType != LogRecordType.Commit); // skip until commit
                     
@@ -739,12 +846,12 @@ namespace EventStore.Core.Services.Storage.ReaderIndex
                     //seqReader.Reposition(commitLogRecord.TransactionPosition);
                     while (count < maxCount)
                     {
-                        result = seqReader.TryReadPrev();
+                        result = reader.TryReadPrev();
                         if (!result.Success) // no more records in TF
                             break;
                         // prepare with TransactionBegin could be scavenged already
                         // so we could reach beyond the start of transaction. In that case we have to stop.
-                        if (result.LogRecord.Position < commit.TransactionPosition)
+                        if (result.LogRecord.LogPosition < commit.TransactionPosition)
                             break;
                         if (result.LogRecord.RecordType != LogRecordType.Prepare)
                             continue;
@@ -759,7 +866,7 @@ namespace EventStore.Core.Services.Storage.ReaderIndex
                             if (new TFPos(commitPostPos, result.RecordPostPosition) <= pos)
                             {
                                 var eventRecord = new EventRecord(commit.FirstEventNumber + prepare.TransactionOffset, prepare);
-                                records.Add(new CommitEventRecord(eventRecord, commit.Position));
+                                records.Add(new CommitEventRecord(eventRecord, commit.LogPosition));
                                 count++;
 
                                 // for backward pass we allow read the same commit, but force to skip last read prepare
@@ -771,17 +878,18 @@ namespace EventStore.Core.Services.Storage.ReaderIndex
                             break;
                     }
                 }
+                var metadata = GetStreamMetadataCached(reader, SystemStreams.AllStream);
+                return new IndexReadAllResult(records, metadata, maxCount, pos, nextPos, prevPos, lastCommitPosition);
             }
             finally
             {
-                ReturnSeqReader(seqReader);
+                _readers.Return(reader);
             }
-            return new IndexReadAllResult(records, maxCount, pos, nextPos, prevPos, lastCommitPosition);
         }
 
         CommitCheckResult IReadIndex.CheckCommitStartingAt(long transactionPosition, long commitPosition)
         {
-            var reader = GetReader();
+            var reader = _readers.Get();
             try
             {
                 string streamId;
@@ -793,8 +901,7 @@ namespace EventStore.Core.Services.Storage.ReaderIndex
                     {
                         var message = string.Format("Couldn't read first prepare of to-be-commited transaction. " 
                                                     + "Transaction pos: {0}, commit pos: {1}.",
-                                                    transactionPosition,
-                                                    commitPosition);
+                                                    transactionPosition, commitPosition);
                         Log.Error(message);
                         throw new InvalidOperationException(message);
                     }
@@ -826,16 +933,18 @@ namespace EventStore.Core.Services.Storage.ReaderIndex
                         Tuple<string, int> prepInfo;
                         if (!_committedEvents.TryGetRecord(prepare.EventId, out prepInfo) || prepInfo.Item1 != prepare.EventStreamId)
                         {
-                            return first
-                                ? new CommitCheckResult(CommitDecision.Ok, streamId, curVersion, -1, -1)
-                                : new CommitCheckResult(CommitDecision.CorruptedIdempotency, streamId, curVersion, -1, -1);
+                            return new CommitCheckResult(
+                                first ? CommitDecision.Ok : CommitDecision.CorruptedIdempotency,
+                                streamId, curVersion, -1, -1);
                         }
                         if (first)
                             startEventNumber = prepInfo.Item2;
                         endEventNumber = prepInfo.Item2;
                         first = false;
                     }
-                    return new CommitCheckResult(CommitDecision.Idempotent, streamId, curVersion, startEventNumber, endEventNumber);
+                    return first /* no data in transaction */ 
+                        ? new CommitCheckResult(CommitDecision.Ok, streamId, curVersion, -1, -1)
+                        : new CommitCheckResult(CommitDecision.Idempotent, streamId, curVersion, startEventNumber, endEventNumber);
                 }
                 else if (expectedVersion < curVersion)
                 {
@@ -853,27 +962,16 @@ namespace EventStore.Core.Services.Storage.ReaderIndex
                         EventRecord record;
                         if (!GetStreamRecord(reader, streamId, eventNumber, out record) || record.EventId != prepare.EventId)
                         {
-                            // if we are dealing with 0th event (stream created event)
-                            // and both events are $stream-created-implicit, then they always have different EventIDs,
-                            // but that doesn't matter and we should just skip them, as following prepares 
-                            // with actual data and EventIDs will allow us to arrive at idempotency decision
-                            if (eventNumber == 0
-                                && record.EventType == SystemEventTypes.StreamCreatedImplicit
-                                && prepare.EventType == SystemEventTypes.StreamCreatedImplicit)
-                            {
-                                // skip $stream-created-implicit prepares and don't set first=false, as 
-                                // essentially we pretend that we haven't checked anything yet :)
-                                continue;
-                            }
-                            
-                            return first
-                                ? new CommitCheckResult(CommitDecision.WrongExpectedVersion, streamId, curVersion, -1, -1)
-                                : new CommitCheckResult(CommitDecision.CorruptedIdempotency, streamId, curVersion, -1, -1);
+                            return new CommitCheckResult(
+                                first ? CommitDecision.WrongExpectedVersion : CommitDecision.CorruptedIdempotency,
+                                streamId, curVersion, -1, -1);
                         }
 
                         first = false;
                     }
-                    return new CommitCheckResult(CommitDecision.Idempotent, streamId, curVersion, expectedVersion + 1, eventNumber);
+                    return first /* no data in transaction */
+                        ? new CommitCheckResult(CommitDecision.WrongExpectedVersion, streamId, curVersion, -1, -1)
+                        : new CommitCheckResult(CommitDecision.Idempotent, streamId, curVersion, expectedVersion + 1, eventNumber);
                 }
                 else if (expectedVersion > curVersion)
                 {
@@ -885,7 +983,7 @@ namespace EventStore.Core.Services.Storage.ReaderIndex
             }
             finally
             {
-                ReturnReader(reader);
+                _readers.Return(reader);
             }
         }
 
@@ -903,20 +1001,25 @@ namespace EventStore.Core.Services.Storage.ReaderIndex
                     _transactionInfoCache.Put(transactionId, transactionInfo);
                 else
                     transactionInfo = new TransactionInfo(int.MinValue, null);
+                Interlocked.Increment(ref _notCachedTransInfo);
+            }
+            else
+            {
+                Interlocked.Increment(ref _cachedTransInfo);
             }
             return transactionInfo;
         }
 
         private bool GetTransactionInfoUncached(long writerCheckpoint, long transactionId, out TransactionInfo transactionInfo)
         {
-            var seqReader = GetSeqReader();
+            var seqReader = _readers.Get();
             try
             {
                 seqReader.Reposition(writerCheckpoint);
                 SeqReadResult result;
                 while ((result = seqReader.TryReadPrev()).Success)
                 {
-                    if (result.LogRecord.Position < transactionId)
+                    if (result.LogRecord.LogPosition < transactionId)
                         break;
                     if (result.LogRecord.RecordType != LogRecordType.Prepare)
                         continue;
@@ -930,7 +1033,7 @@ namespace EventStore.Core.Services.Storage.ReaderIndex
             }
             finally
             {
-                ReturnSeqReader(seqReader);
+                _readers.Return(seqReader);
             }
             transactionInfo = new TransactionInfo(int.MinValue, null);
             return false;
@@ -938,64 +1041,62 @@ namespace EventStore.Core.Services.Storage.ReaderIndex
 
         ReadIndexStats IReadIndex.GetStatistics()
         {
-            return new ReadIndexStats(Interlocked.Read(ref _succReadCount), Interlocked.Read(ref _failedReadCount));
+            return new ReadIndexStats(Interlocked.Read(ref TFChunkReader.CachedReads),
+                                      Interlocked.Read(ref TFChunkReader.NotCachedReads),
+                                      Interlocked.Read(ref _cachedStreamInfo),
+                                      Interlocked.Read(ref _notCachedStreamInfo),
+                                      Interlocked.Read(ref _cachedTransInfo),
+                                      Interlocked.Read(ref _notCachedTransInfo));
         }
 
         private StreamMetadata GetStreamMetadataCached(ITransactionFileReader reader, string streamId)
         {
+            if (SystemStreams.IsMetastream(streamId))
+                return _metastreamMetadata;
+
             StreamCacheInfo streamCacheInfo;
-            if (_streamInfoCache.TryGet(streamId, out streamCacheInfo) && streamCacheInfo.Metadata.HasValue)
-                return streamCacheInfo.Metadata.Value;
+            if (_streamInfoCache.TryGet(streamId, out streamCacheInfo) && streamCacheInfo.Metadata != null)
+            {
+                Interlocked.Increment(ref _cachedStreamInfo);
+                return streamCacheInfo.Metadata;
+            }
 
             var metadata = GetStreamMetadataUncached(reader, streamId);
             _streamInfoCache.Put(streamId,
                                  key => new StreamCacheInfo(null, metadata),
-                                 (key, oldValue) => new StreamCacheInfo(oldValue.LastEventNumber, metadata));
+                                 // we keep previous metadata, if present by this time, because it was added on commit and is more up to date
+                                 (key, oldValue) => new StreamCacheInfo(oldValue.LastEventNumber, oldValue.Metadata ?? metadata));
             return metadata;
         }
 
         private StreamMetadata GetStreamMetadataUncached(ITransactionFileReader reader, string streamId)
         {
-            EventRecord record;
-            if (!GetStreamRecord(reader, streamId, 0, out record))
-                throw new Exception("GetStreamMetadata couldn't find 0th event on stream. That should never happen.");
+            Interlocked.Increment(ref _notCachedStreamInfo);
 
-            if (record.Metadata == null || record.Metadata.Length == 0 || (record.Flags & PrepareFlags.IsJson) == 0)
-                return new StreamMetadata(null, null);
+            var metastreamId = SystemStreams.MetastreamOf(streamId);
+            var metaEventNumber = GetLastStreamEventNumberCached(reader, metastreamId);
+            if (metaEventNumber == ExpectedVersion.NoStream || metaEventNumber == EventNumber.DeletedStream)
+                return StreamMetadata.Empty;
+
+            EventRecord record;
+            if (!GetStreamRecord(reader, metastreamId, metaEventNumber, out record))
+                throw new Exception(string.Format("GetStreamRecord couldn't find metaevent #{0} on metastream '{1}'. That should never happen.", metaEventNumber, metastreamId));
+
+            if (record.Data.Length == 0 || (record.Flags & PrepareFlags.IsJson) == 0)
+                return StreamMetadata.Empty;
 
             try
             {
-                var json = Encoding.UTF8.GetString(record.Metadata);
-                var jObj = JObject.Parse(json);
-
-                int maxAge = -1;
-                int maxCount = -1;
-
-                JToken prop;
-                if (jObj.TryGetValue(SystemMetadata.MaxAge, out prop) && prop.Type == JTokenType.Integer)
-                    maxAge = prop.Value<int>();
-                if (jObj.TryGetValue(SystemMetadata.MaxCount, out prop) && prop.Type == JTokenType.Integer)
-                    maxCount = prop.Value<int>();
-
-                return new StreamMetadata(maxCount > 0 ? maxCount : (int?) null,
-                                          maxAge > 0 ? TimeSpan.FromSeconds(maxAge) : (TimeSpan?) null);
+                return StreamMetadata.FromJsonBytes(record.Data);
             }
             catch (Exception)
             {
-                return new StreamMetadata(null, null);
+                return StreamMetadata.Empty;
             }
         }
 
         public void Close()
         {
-            foreach (var reader in _readers)
-            {
-                reader.Close();
-            }
-            foreach (var seqReader in _seqReaders)
-            {
-                seqReader.Close();
-            }
             try
             {
                 _tableIndex.Close(removeFiles: false);

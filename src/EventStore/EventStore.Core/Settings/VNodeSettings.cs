@@ -28,6 +28,7 @@
 
 using System;
 using System.Net;
+using System.Security.Cryptography.X509Certificates;
 using EventStore.Common.Utils;
 using EventStore.Core.Services.Monitoring;
 
@@ -36,58 +37,86 @@ namespace EventStore.Core.Settings
     public class SingleVNodeSettings
     {
         public readonly IPEndPoint ExternalTcpEndPoint;
+        public readonly IPEndPoint ExternalSecureTcpEndPoint;
         public readonly IPEndPoint ExternalHttpEndPoint;
         public readonly string[] HttpPrefixes;
-        public readonly int HttpSendingThreads;
-        public readonly int HttpReceivingThreads;
-        public readonly int TcpSendingThreads;
+        public readonly bool EnableTrustedAuth;
+        public readonly X509Certificate2 Certificate;
+        public readonly int WorkerThreads;
+
+        public readonly int MinFlushDelayMs;
+        public readonly TimeSpan PrepareTimeout;
+        public readonly TimeSpan CommitTimeout;
 
         public readonly TimeSpan StatsPeriod;
         public readonly StatsStorage StatsStorage;
 
+        public readonly bool SkipInitializeStandardUsersCheck;
+
         public SingleVNodeSettings(IPEndPoint externalTcpEndPoint, 
+                                   IPEndPoint externalSecureTcpEndPoint,
                                    IPEndPoint externalHttpEndPoint, 
                                    string[] httpPrefixes,
-                                   int httpSendingThreads, 
-                                   int httpReceivingThreads, 
-                                   int tcpSendingThreads,
+                                   bool enableTrustedAuth,
+                                   X509Certificate2 certificate,
+                                   int workerThreads, 
+                                   int minFlushDelayMs,
+                                   TimeSpan prepareTimeout,
+                                   TimeSpan commitTimeout,
                                    TimeSpan statsPeriod, 
-                                   StatsStorage statsStorage = StatsStorage.StreamAndCsv)
+                                   StatsStorage statsStorage = StatsStorage.StreamAndCsv,
+                                   bool skipInitializeStandardUsersCheck = false)
         {
             Ensure.NotNull(externalTcpEndPoint, "externalTcpEndPoint");
             Ensure.NotNull(externalHttpEndPoint, "externalHttpEndPoint");
             Ensure.NotNull(httpPrefixes, "httpPrefixes");
-            Ensure.Positive(httpReceivingThreads, "httpReceivingThreads");
-            Ensure.Positive(httpSendingThreads, "httpSendingThreads");
-            Ensure.Positive(tcpSendingThreads, "tcpSendingThreads");
-            
+            if (externalSecureTcpEndPoint != null)
+                Ensure.NotNull(certificate, "certificate");
+            Ensure.Positive(workerThreads, "workerThreads");
+            Ensure.Nonnegative(minFlushDelayMs, "minFlushDelayMs");
+
             ExternalTcpEndPoint = externalTcpEndPoint;
+            ExternalSecureTcpEndPoint = externalSecureTcpEndPoint;
             ExternalHttpEndPoint = externalHttpEndPoint;
             HttpPrefixes = httpPrefixes;
-            HttpSendingThreads = httpSendingThreads;
-            HttpReceivingThreads = httpReceivingThreads;
-            TcpSendingThreads = tcpSendingThreads;
+            EnableTrustedAuth = enableTrustedAuth;
+            Certificate = certificate;
+            WorkerThreads = workerThreads;
+
+            MinFlushDelayMs = minFlushDelayMs;
+            PrepareTimeout = prepareTimeout;
+            CommitTimeout = commitTimeout;
 
             StatsPeriod = statsPeriod;
             StatsStorage = statsStorage;
+
+            SkipInitializeStandardUsersCheck = skipInitializeStandardUsersCheck;
         }
 
         public override string ToString()
         {
             return string.Format("ExternalTcpEndPoint: {0},\n"
-                                 + "ExternalHttpEndPoint: {1},\n"
-                                 + "HttpPrefixes: {2},\n"
-                                 + "HttpSendingThreads: {3}\n" 
-                                 + "HttpReceivingThreads: {4}\n"
-                                 + "TcpSendingThreads: {5}\n"
-                                 + "StatsPeriod: {6}\n"
-                                 + "StatsStorage: {7}",
+                                 + "ExternalSecureTcpEndPoint: {1},\n"
+                                 + "ExternalHttpEndPoint: {2},\n"
+                                 + "HttpPrefixes: {3},\n"
+                                 + "EnableTrustedAuth: {4},\n"
+                                 + "Certificate: {5},\n"
+                                 + "WorkerThreads: {6}\n" 
+                                 + "MinFlushDelayMs: {7}\n"
+                                 + "PrepareTimeout: {8}\n"
+                                 + "CommitTimeout: {9}\n"
+                                 + "StatsPeriod: {10}\n"
+                                 + "StatsStorage: {11}",
                                  ExternalTcpEndPoint,
+                                 ExternalSecureTcpEndPoint == null ? "n/a" : ExternalSecureTcpEndPoint.ToString(),
                                  ExternalHttpEndPoint,
                                  string.Join(", ", HttpPrefixes),
-                                 HttpSendingThreads,
-                                 HttpReceivingThreads,
-                                 TcpSendingThreads,
+                                 EnableTrustedAuth,
+                                 Certificate == null ? "n/a" : Certificate.ToString(verbose: true),
+                                 WorkerThreads,
+                                 MinFlushDelayMs,
+                                 PrepareTimeout,
+                                 CommitTimeout,
                                  StatsPeriod,
                                  StatsStorage);
         }

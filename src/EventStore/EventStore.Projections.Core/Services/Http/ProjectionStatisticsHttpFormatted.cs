@@ -26,7 +26,6 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 // 
 using System;
-using EventStore.Projections.Core.Services.Processing;
 
 namespace EventStore.Projections.Core.Services.Http
 {
@@ -37,6 +36,9 @@ namespace EventStore.Projections.Core.Services.Http
             this.Status = source.Status;
             this.StateReason = source.StateReason;
             this.Name = source.Name;
+            this.EffectiveName = source.Name;
+            this.Epoch = source.Epoch;
+            this.Version = source.Version;
             this.Mode = source.Mode;
             this.Position = (source.Position ?? (object)"").ToString();
             this.Progress = source.Progress;
@@ -52,7 +54,14 @@ namespace EventStore.Projections.Core.Services.Http
             var statusLocalUrl = "/projection/" + source.Name;
             this.StatusUrl = makeAbsoluteUrl(statusLocalUrl);
             this.StateUrl = makeAbsoluteUrl(statusLocalUrl + "/state");
+            this.ResultUrl = makeAbsoluteUrl(statusLocalUrl + "/result");
         }
+
+        public int Version { get; set; }
+
+        public int Epoch { get; set; }
+
+        public string EffectiveName { get; set; }
 
         public int WritesInProgress { get; set; }
 
@@ -79,6 +88,8 @@ namespace EventStore.Projections.Core.Services.Http
         public string StatusUrl { get; set; }
 
         public string StateUrl { get; set; }
+
+        public string ResultUrl { get; set; }
 
         public string CheckpointStatus { get; set; }
 

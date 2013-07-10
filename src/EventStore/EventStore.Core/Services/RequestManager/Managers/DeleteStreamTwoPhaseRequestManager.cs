@@ -29,45 +29,52 @@
 using System;
 using EventStore.Core.Bus;
 using EventStore.Core.Messages;
-using EventStore.Core.Services.TimerService;
+using EventStore.Core.Services.Storage.ReaderIndex;
 
 namespace EventStore.Core.Services.RequestManager.Managers
 {
-    public class DeleteStreamTwoPhaseRequestManager : TwoPhaseRequestManagerBase, IHandle<StorageMessage.DeleteStreamRequestCreated>
+    public class DeleteStreamTwoPhaseRequestManager : TwoPhaseRequestManagerBase, 
+                                                      IHandle<ClientMessage.DeleteStream>
     {
-        public DeleteStreamTwoPhaseRequestManager(IPublisher publisher, int prepareCount, int commitCount) :
-                base(publisher, prepareCount, commitCount)
+        private ClientMessage.DeleteStream _request;
+
+        public DeleteStreamTwoPhaseRequestManager(IPublisher publisher,  
+                                                  int prepareCount, 
+                                                  int commitCount, 
+                                                  TimeSpan prepareTimeout,
+                                                  TimeSpan commitTimeout) 
+            : base(publisher, prepareCount, commitCount, prepareTimeout, commitTimeout)
         {
         }
 
-        public void Handle(StorageMessage.DeleteStreamRequestCreated request)
+        public void Handle(ClientMessage.DeleteStream request)
         {
-            Init(request.Envelope, request.CorrelationId, -1);
-
-            Publisher.Publish(new StorageMessage.WriteDelete(request.CorrelationId,
-                                                             PublishEnvelope,
-                                                             request.EventStreamId,
-                                                             request.ExpectedVersion,
-                                                             allowImplicitStreamCreation: true,
-                                                             liveUntil: DateTime.UtcNow + Timeouts.PrepareWriteMessageTimeout));
-            Publisher.Publish(TimerMessage.Schedule.Create(Timeouts.PrepareTimeout,
-                                                           PublishEnvelope,
-                                                           new StorageMessage.PreparePhaseTimeout(CorrelationId)));
+            _request = request;
+            Init(request.Envelope, request.InternalCorrId, request.CorrelationId, request.EventStreamId,
+                 request.User, null, StreamAccessType.Delete);
         }
 
-        protected override void CompleteSuccessRequest(Guid correlationId, int firstEventNumber)
+        protected override void OnSecurityAccessGranted(Guid internalCorrId)
         {
-            base.CompleteSuccessRequest(correlationId, firstEventNumber);
-            var responseMsg = new ClientMessage.DeleteStreamCompleted(correlationId, OperationResult.Success, null);
+            Publisher.Publish(
+                new StorageMessage.WriteDelete(
+                    internalCorrId, PublishEnvelope, _request.EventStreamId, _request.ExpectedVersion,
+                    liveUntil: NextTimeoutTime - TimeoutOffset));
+            _request = null;
+        }
+
+        protected override void CompleteSuccessRequest(int firstEventNumber)
+        {
+            base.CompleteSuccessRequest(firstEventNumber);
+            var responseMsg = new ClientMessage.DeleteStreamCompleted(ClientCorrId, OperationResult.Success, null);
             ResponseEnvelope.ReplyWith(responseMsg);
         }
 
-        protected override void CompleteFailedRequest(Guid correlationId, OperationResult result, string error)
+        protected override void CompleteFailedRequest(OperationResult result, string error)
         {
-            base.CompleteFailedRequest(correlationId, result, error);
-            var responseMsg = new ClientMessage.DeleteStreamCompleted(correlationId, result, error);
+            base.CompleteFailedRequest(result, error);
+            var responseMsg = new ClientMessage.DeleteStreamCompleted(ClientCorrId, result, error);
             ResponseEnvelope.ReplyWith(responseMsg);
         }
-
     }
 }

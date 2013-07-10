@@ -3,12 +3,15 @@
 define(["projections/ResourceMonitor"], function (resourceMonitor) {
     //TODO: handle errors
     return {
-        create: function (baseUrl) {
+        create: function (baseUrl, options) {
+            var autoRefresh = !options || options.autoRefresh;
             var stateMonitor = null;
+            var resultMonitor = null;
             var statusMonitor = null;
             var sourceMonitor = null;
-            var commandErrorHandler = null;
-            var pendingSubscribe = null;
+            var commandErrorHandler = [];
+            var pendingSubscribe = [];
+            var subscribed = { statusChanged: [], stateChanged: [], resultChanged: [], sourceChanged: [], error: []};
 
             function enrichStatus(status) {
                 var startUpdateAvailable =
@@ -25,31 +28,49 @@ define(["projections/ResourceMonitor"], function (resourceMonitor) {
                 return status;
             }
 
+            function dispatch(handlers, arg1, arg2) {
+                for (var i = 0; i < handlers.length; i++) 
+                    handlers[i](arg1, arg2);
+            }
+
             function internalSubscribe(handlers) {
 
-                stateMonitor = resourceMonitor.create(baseUrl + "/state", "application/json", "text");
-                statusMonitor = resourceMonitor.create(baseUrl + "/statistics", "application/json");
-                sourceMonitor = resourceMonitor.create(baseUrl + "/query?config=yes", "application/json");
+                stateMonitor = resourceMonitor.create(baseUrl + "/state", { accept: "application/json", type: "text", autoRefresh: autoRefresh });
+                resultMonitor = resourceMonitor.create(baseUrl + "/result", { accept: "application/json", type: "text", autoRefresh: autoRefresh });
+                statusMonitor = resourceMonitor.create(baseUrl + "/statistics", { accept: "application/json", autoRefresh: autoRefresh });
+                sourceMonitor = resourceMonitor.create(baseUrl + "/query?config=yes", { accept: "application/json", autoRefresh: autoRefresh });
 
                 if (handlers.statusChanged) {
-                    statusMonitor.start(function(rawStatus) {
-                        var status = rawStatus.projections[0];
-                        var enriched = enrichStatus(status);
-                        handlers.statusChanged(enriched);
-                    });
+                    if (subscribed.statusChanged.length == 0) 
+                        statusMonitor.start(function(rawStatus) {
+                            var status = rawStatus.projections[0];
+                            var enriched = enrichStatus(status);
+                            dispatch(subscribed.statusChanged, enriched);
+                        });
+                    subscribed.statusChanged.push(handlers.statusChanged);
                 }
 
                 if (handlers.stateChanged) {
-                    stateMonitor.start(handlers.stateChanged);
+                    if (subscribed.stateChanged.length == 0)
+                        stateMonitor.start(function (v, xhr) { dispatch(subscribed.stateChanged, v, xhr); });
+                    subscribed.stateChanged.push(handlers.stateChanged);
+                }
+
+                if (handlers.resultChanged) {
+                    if (subscribed.resultChanged.length == 0)
+                        resultMonitor.start(function (v, xhr) { dispatch(subscribed.resultChanged, v, xhr); });
+                    subscribed.resultChanged.push(handlers.resultChanged);
                 }
 
                 if (handlers.sourceChanged) {
-                    sourceMonitor.start(handlers.sourceChanged);
+                    if (subscribed.sourceChanged.length == 0)
+                        sourceMonitor.start(function (v) { dispatch(subscribed.sourceChanged, v); });
+                    subscribed.sourceChanged.push(handlers.sourceChanged);
                 }
 
 
                 if (handlers.error) {
-                    commandErrorHandler = handlers.error;
+                    commandErrorHandler.push(handlers.error);
                 }
             }
 
@@ -58,21 +79,13 @@ define(["projections/ResourceMonitor"], function (resourceMonitor) {
                     if (baseUrl) {
                         internalSubscribe(handlers);
                     } else {
-                        pendingSubscribe = handlers;
+                        pendingSubscribe.push(handlers);
                     }
-                },
-
-                unsubscribe: function () {
-                    pendingSubscribe = null;
-                    if (stateMonitor !== null) stateMonitor.stop();
-                    if (statusMonitor !== null) statusMonitor.stop();
-
-                    stateMonitor = null;
-                    statusMonitor = null;
                 },
 
                 poll: function () {
                     if (stateMonitor) stateMonitor.poll();
+                    if (resultMonitor) resultMonitor.poll();
                     if (statusMonitor) statusMonitor.poll();
                     if (sourceMonitor) sourceMonitor.poll();
                 },
@@ -80,8 +93,9 @@ define(["projections/ResourceMonitor"], function (resourceMonitor) {
                 configureUrl: function (url) {
                     baseUrl = url;
                     if (pendingSubscribe)
-                        internalSubscribe(pendingSubscribe);
-                    pendingSubscribe = null;
+                        for (var i = 0; i < pendingSubscribe.length; i++) 
+                            internalSubscribe(pendingSubscribe[i]);
+                    pendingSubscribe = [];
                 }
 
             };

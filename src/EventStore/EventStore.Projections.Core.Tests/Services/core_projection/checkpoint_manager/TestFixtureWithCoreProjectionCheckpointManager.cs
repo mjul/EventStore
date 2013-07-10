@@ -27,6 +27,7 @@
 // 
 
 using System;
+using EventStore.Projections.Core.Messages;
 using EventStore.Projections.Core.Services;
 using EventStore.Projections.Core.Services.Processing;
 using NUnit.Framework;
@@ -49,23 +50,26 @@ namespace EventStore.Projections.Core.Tests.Services.core_projection.checkpoint_
         protected bool _createTempStreams;
         protected bool _stopOnEof;
         protected ProjectionNamesBuilder _namingBuilder;
+        protected ResultEmitter _resultEmitter;
 
         [SetUp]
         public void setup()
         {
             Given();
-            _namingBuilder = new ProjectionNamesBuilder("projection");
-            _config = new ProjectionConfig(_checkpointHandledThreshold, _checkpointUnhandledBytesThreshold,
+            _namingBuilder = ProjectionNamesBuilder.CreateForTest("projection");
+            _config = new ProjectionConfig(null, _checkpointHandledThreshold, _checkpointUnhandledBytesThreshold,
                 _pendingEventsThreshold, _maxWriteBatchLength, _emitEventEnabled,
                 _checkpointsEnabled, _createTempStreams, _stopOnEof);
+            _resultEmitter = new ResultEmitter(_namingBuilder);
             When();
         }
 
-        protected virtual void When()
+        protected new virtual void When()
         {
             _manager = new DefaultCheckpointManager(
-                _projection, _bus, _projectionCorrelationId, _readDispatcher, _writeDispatcher, _config, "projection",
-                new StreamPositionTagger("stream"), _namingBuilder, _checkpointsEnabled, true);
+                _bus, _projectionCorrelationId, new ProjectionVersion(1, 0, 0), null, _readDispatcher, _writeDispatcher,
+                _config, "projection", new StreamPositionTagger("stream"), _namingBuilder, _resultEmitter,
+                _checkpointsEnabled);
 
         }
 
@@ -74,6 +78,16 @@ namespace EventStore.Projections.Core.Tests.Services.core_projection.checkpoint_
             _projectionCheckpointStreamId = "$projections-projection-checkpoint";
             _projectionCorrelationId = Guid.NewGuid();
             _projection = new FakeCoreProjection();
+            _bus.Subscribe<CoreProjectionProcessingMessage.CheckpointCompleted>(_projection);
+            _bus.Subscribe<CoreProjectionProcessingMessage.CheckpointLoaded>(_projection);
+            _bus.Subscribe<CoreProjectionProcessingMessage.PrerecordedEventsLoaded>(_projection);
+            _bus.Subscribe<CoreProjectionProcessingMessage.RestartRequested>(_projection);
+            _bus.Subscribe<CoreProjectionProcessingMessage.Failed>(_projection);
+            _bus.Subscribe<EventReaderSubscriptionMessage.CommittedEventReceived>(_projection);
+            _bus.Subscribe<EventReaderSubscriptionMessage.CheckpointSuggested>(_projection);
+            _bus.Subscribe<EventReaderSubscriptionMessage.EofReached>(_projection);
+            _bus.Subscribe<EventReaderSubscriptionMessage.ProgressChanged>(_projection);
+            _bus.Subscribe<EventReaderSubscriptionMessage.NotAuthorized>(_projection);
             _checkpointHandledThreshold = 2;
             _checkpointUnhandledBytesThreshold = 5;
             _pendingEventsThreshold = 5;

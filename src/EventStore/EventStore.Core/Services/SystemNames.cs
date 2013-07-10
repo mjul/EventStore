@@ -28,24 +28,73 @@
 
 namespace EventStore.Core.Services
 {
+    public static class SystemHeaders
+    {
+        public const string ExpectedVersion = "ES-ExpectedVersion";
+        public const string RequireMaster = "ES-RequireMaster";
+        public const string ResolveLinkTos = "ES-ResolveLinkTos";
+        public const string TrsutedAuth = "ES-TrustedAuth";
+        public const string ProjectionPosition = "ES-Position";
+    }
+
     public static class SystemStreams
     {
+        public const string AllStream = "$all";
         public const string StreamsStream = "$streams";
         public const string StatsStreamPrefix = "$stats";
+
+        public static bool IsSystemStream(string streamId)
+        {
+            return streamId.StartsWith("$");
+        }
+
+        public static string MetastreamOf(string streamId)
+        {
+            return "$$" + streamId;
+        }
+
+        public static bool IsMetastream(string streamId)
+        {
+            return streamId.StartsWith("$$");
+        }
+
+        public static string OriginalStreamOf(string metastreamId)
+        {
+            return metastreamId.Substring(2);
+        }
     }
 
     public static class SystemMetadata
     {
         public const string MaxAge = "$maxAge";
         public const string MaxCount = "$maxCount";
+        public const string CacheControl = "$cacheControl";
+
+        public const string Acl = "$acl";
+        public const string AclRead = "$r";
+        public const string AclWrite = "$w";
+        public const string AclDelete = "$d";
+        public const string AclMetaRead = "$mr";
+        public const string AclMetaWrite = "$mw";
     }
 
     public static class SystemEventTypes
     {
-        public const string StreamCreated = "$stream-created";
-        public const string StreamCreatedImplicit = "$stream-created-implicit";
-        public const string StreamDeleted = "$stream-deleted";
-        public const string StatsCollection = "$stats-collected";
+        public const string StreamDeleted = "$streamDeleted";
+        public const string StatsCollection = "$statsCollected";
         public const string LinkTo = "$>";
+        public const string StreamMetadata = "$metadata";
+    }
+
+    public static class SystemUsers
+    {
+        public const string Admin = "admin";
+        public const string DefaultAdminPassword = "changeit";
+    }
+
+    public static class SystemUserGroups
+    {
+        public const string Admins = "$admins";
+        public const string All = "$all";
     }
 }

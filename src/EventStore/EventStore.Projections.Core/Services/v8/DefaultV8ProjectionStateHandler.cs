@@ -29,6 +29,7 @@
 using System;
 using System.IO;
 using System.Text;
+using EventStore.Common.Utils;
 
 namespace EventStore.Projections.Core.Services.v8
 {
@@ -36,15 +37,16 @@ namespace EventStore.Projections.Core.Services.v8
     {
         private static readonly string _jsPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Prelude");
 
-        public DefaultV8ProjectionStateHandler(string query, Action<string> logger)
-            : base("1Prelude", query, GetModuleSource, logger)
+        public DefaultV8ProjectionStateHandler(
+            string query, Action<string> logger, Action<int, Action> cancelCallbackFactory)
+            : base("1Prelude", query, GetModuleSource, logger, cancelCallbackFactory)
         {
         }
 
         public static Tuple<string, string> GetModuleSource(string name)
         {
             var fullScriptFileName = Path.GetFullPath(Path.Combine(_jsPath, name + ".js"));
-            var scriptSource = File.ReadAllText(fullScriptFileName, Encoding.UTF8);
+            var scriptSource = File.ReadAllText(fullScriptFileName, Helper.UTF8NoBom);
             return Tuple.Create(scriptSource, fullScriptFileName);
         }
     }

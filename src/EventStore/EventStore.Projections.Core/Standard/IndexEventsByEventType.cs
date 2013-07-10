@@ -32,9 +32,10 @@ using EventStore.Projections.Core.Services.Processing;
 
 namespace EventStore.Projections.Core.Standard
 {
-    public class IndexEventsByEventType : IProjectionStateHandler
+    public class IndexEventsByEventType : IProjectionStateHandler, IProjectionCheckpointHandler
     {
         private readonly string _indexStreamPrefix;
+        private readonly string _indexCheckpointStream;
 
         public IndexEventsByEventType(string source, Action<string> logger)
         {
@@ -46,6 +47,7 @@ namespace EventStore.Projections.Core.Standard
             }
             // we will need to declare event types we are interested in
             _indexStreamPrefix = "$et-";
+            _indexCheckpointStream = "$et";
         }
 
         public void ConfigureSourceProcessingStrategy(QuerySourceProcessingStrategyBuilder builder)
@@ -70,29 +72,43 @@ namespace EventStore.Projections.Core.Standard
         }
 
         public bool ProcessEvent(
-            string partition, CheckpointTag eventPosition, string streamId, string eventType, string category1,
-            Guid eventId, int sequenceNumber, string metadata, string data, out string newState,
-            out EmittedEvent[] emittedEvents)
+            string partition, CheckpointTag eventPosition, string category1, ResolvedEvent data,
+            out string newState, out EmittedEvent[] emittedEvents)
         {
             emittedEvents = null;
             newState = null;
-            if (streamId.StartsWith("$"))
+            if (data.EventStreamId != data.PositionStreamId)
                 return false;
-            if (eventType == "$>")
+            if (data.EventType == "$>")
                 return false;
 
             emittedEvents = new[]
                 {
-                    new EmittedEvent(
-                        _indexStreamPrefix + eventType, Guid.NewGuid(), "$>", sequenceNumber + "@" + streamId,
-                        eventPosition, expectedTag: null)
+                    new EmittedDataEvent(
+                        _indexStreamPrefix + data.EventType, Guid.NewGuid(), "$>",
+                        data.EventSequenceNumber + "@" + data.EventStreamId, null, eventPosition, expectedTag: null)
                 };
 
             return true;
         }
 
+        public string TransformStateToResult()
+        {
+            throw new NotImplementedException();
+        }
+
         public void Dispose()
         {
+        }
+
+        public void ProcessNewCheckpoint(CheckpointTag checkpointPosition, out EmittedEvent[] emittedEvents)
+        {
+            emittedEvents = new[]
+                {
+                    new EmittedDataEvent(
+                        _indexCheckpointStream, Guid.NewGuid(), "$Checkpoint", checkpointPosition.ToJsonString(), null,
+                        checkpointPosition, expectedTag: null)
+                };
         }
     }
 }

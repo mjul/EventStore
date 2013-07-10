@@ -27,9 +27,10 @@
 // 
 
 using System;
-using EventStore.Core.Tests.Bus.Helpers;
+using EventStore.Core.Messages;
+using EventStore.Core.Messaging;
 using EventStore.Core.Tests.Fakes;
-using EventStore.Projections.Core.Messages;
+using EventStore.Projections.Core.Services;
 using EventStore.Projections.Core.Services.Processing;
 using NUnit.Framework;
 
@@ -38,38 +39,100 @@ namespace EventStore.Projections.Core.Tests.Services.core_projection.emitted_str
     [TestFixture]
     public class when_creating_an_emitted_stream
     {
+        private FakePublisher _fakePublisher;
+
+        private
+            RequestResponseDispatcher
+                <ClientMessage.ReadStreamEventsBackward, ClientMessage.ReadStreamEventsBackwardCompleted>
+            _readDispatcher;
+
+        private RequestResponseDispatcher<ClientMessage.WriteEvents, ClientMessage.WriteEventsCompleted>
+            _writeDispatcher;
+
+        [SetUp]
+        public void setup()
+        {
+            _fakePublisher = new FakePublisher();
+            _readDispatcher =
+                new RequestResponseDispatcher
+                    <ClientMessage.ReadStreamEventsBackward, ClientMessage.ReadStreamEventsBackwardCompleted>(
+                    _fakePublisher, v => v.CorrelationId, v => v.CorrelationId, new PublishEnvelope(_fakePublisher));
+            _writeDispatcher =
+                new RequestResponseDispatcher<ClientMessage.WriteEvents, ClientMessage.WriteEventsCompleted>(
+                    _fakePublisher, v => v.CorrelationId, v => v.CorrelationId, new PublishEnvelope(_fakePublisher));
+            ;
+        }
+
         [Test, ExpectedException(typeof (ArgumentNullException))]
         public void null_stream_id_throws_argument_null_exception()
         {
-            var s = new EmittedStream(
-                null, CheckpointTag.FromPosition(0, -1), new FakePublisher(), new TestCheckpointManagerMessageHandler(), 50);
+            new EmittedStream(
+                null, new ProjectionVersion(1, 0, 0), null, new TransactionFilePositionTagger(),
+                CheckpointTag.FromPosition(0, -1), CheckpointTag.FromPosition(0, -1), _readDispatcher, _writeDispatcher,
+                new TestCheckpointManagerMessageHandler(), 50);
         }
 
         [Test, ExpectedException(typeof (ArgumentException))]
         public void empty_stream_id_throws_argument_exception()
         {
-            var s = new EmittedStream(
-                "", CheckpointTag.FromPosition(0, -1), new FakePublisher(), new TestCheckpointManagerMessageHandler(), 50);
+            new EmittedStream(
+                "", new ProjectionVersion(1, 0, 0), null, new TransactionFilePositionTagger(),
+                CheckpointTag.FromPosition(0, -1), CheckpointTag.FromPosition(0, -1), _readDispatcher, _writeDispatcher,
+                new TestCheckpointManagerMessageHandler(), 50);
+        }
+
+        [Test, ExpectedException(typeof(ArgumentNullException))]
+        public void null_zero_position_throws_argument_exception()
+        {
+            new EmittedStream(
+                "", new ProjectionVersion(1, 0, 0), null, new TransactionFilePositionTagger(), null,
+                CheckpointTag.FromPosition(0, -1), _readDispatcher, _writeDispatcher,
+                new TestCheckpointManagerMessageHandler(), 50);
+        }
+
+        [Test, ExpectedException(typeof(ArgumentNullException))]
+        public void null_from_throws_argument_exception()
+        {
+            new EmittedStream(
+                "", new ProjectionVersion(1, 0, 0), null, new TransactionFilePositionTagger(),
+                CheckpointTag.FromPosition(0, -1), null, _readDispatcher, _writeDispatcher,
+                new TestCheckpointManagerMessageHandler(), 50);
+        }
+
+        [Test, ExpectedException(typeof(ArgumentNullException))]
+        public void null_read_dispatcher_throws_argument_null_exception()
+        {
+            new EmittedStream(
+                "test", new ProjectionVersion(1, 0, 0), null, new TransactionFilePositionTagger(),
+                CheckpointTag.FromPosition(0, -1), CheckpointTag.FromPosition(0, -1), null, _writeDispatcher,
+                new TestCheckpointManagerMessageHandler(), 50);
         }
 
         [Test, ExpectedException(typeof (ArgumentNullException))]
-        public void null_publisher_throws_argument_null_exception()
+        public void null_write_dispatcher_throws_argument_null_exception()
         {
-            var s = new EmittedStream(
-                "test", CheckpointTag.FromPosition(0, -1), null, new TestCheckpointManagerMessageHandler(), 50);
+            new EmittedStream(
+                "test", new ProjectionVersion(1, 0, 0), null, new TransactionFilePositionTagger(),
+                CheckpointTag.FromPosition(0, -1), CheckpointTag.FromPosition(0, -1), _readDispatcher, null,
+                new TestCheckpointManagerMessageHandler(), 50);
         }
 
         [Test, ExpectedException(typeof (ArgumentNullException))]
         public void null_ready_handler_throws_argumenbt_null_exception()
         {
-            var s = new EmittedStream("test", CheckpointTag.FromPosition(0, -1), new FakePublisher(), null, 50);
+            new EmittedStream(
+                "test", new ProjectionVersion(1, 0, 0), null, new TransactionFilePositionTagger(),
+                CheckpointTag.FromPosition(0, -1), CheckpointTag.FromPosition(0, -1), _readDispatcher, _writeDispatcher,
+                null, 50);
         }
 
         [Test]
         public void it_can_be_created()
         {
-            var s = new EmittedStream(
-                "test", CheckpointTag.FromPosition(0, -1), new FakePublisher(), new TestCheckpointManagerMessageHandler(), 50);
+            new EmittedStream(
+                "test", new ProjectionVersion(1, 0, 0), null, new TransactionFilePositionTagger(),
+                CheckpointTag.FromPosition(0, -1), CheckpointTag.FromPosition(0, -1), _readDispatcher, _writeDispatcher,
+                new TestCheckpointManagerMessageHandler(), 50);
         }
     }
 }

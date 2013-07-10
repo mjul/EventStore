@@ -81,11 +81,10 @@ namespace EventStore.TestClient
 
             _commands.Register(new PingFloodHttpProcessor());
 
-            _commands.Register(new CreateStreamProcessor());
-
             _commands.Register(new WriteProcessor());
             _commands.Register(new WriteJsonProcessor());
             _commands.Register(new WriteFloodProcessor());
+            _commands.Register(new WriteFloodClientApiProcessor());
             _commands.Register(new WriteFloodWaitingProcessor());
 
             _commands.Register(new MultiWriteProcessor());
@@ -118,6 +117,8 @@ namespace EventStore.TestClient
             _commands.Register(new ScavengeProcessor());
 
             _commands.Register(new TcpSanitazationCheckProcessor());
+
+            _commands.Register(new SubscriptionStressTestProcessor());
         }
 
         public int Run()
@@ -167,7 +168,7 @@ namespace EventStore.TestClient
         {
             Log.Info("Processing command: {0}.", string.Join(" ", args));
 
-            var context = new CommandProcessorContext(this, Log, new ManualResetEvent(true));
+            var context = new CommandProcessorContext(this, Log, new ManualResetEventSlim(true));
 
             int exitCode;
             if (_commands.TryProcess(context, args, out exitCode))
@@ -190,10 +191,12 @@ namespace EventStore.TestClient
             Connection typedConnection = null;
 
             var connection = _connector.ConnectTo(
+                Guid.NewGuid(),
                 tcpEndPoint ?? TcpEndpoint,
                 conn =>
                 {
-                    Log.Info("Connected to [{0}].", conn.EffectiveEndPoint);
+                    if (!InteractiveMode)
+                        Log.Info("Connected to [{0}, L{1}].", conn.RemoteEndPoint, conn.LocalEndPoint);
                     if (connectionEstablished != null)
                     {
                         connectionCreatedEvent.WaitOne(500);
@@ -202,9 +205,8 @@ namespace EventStore.TestClient
                 },
                 (conn, error) =>
                 {
-                    var message = string.Format("Connection to [{0}] failed. Error: {1}.",
-                                                conn.EffectiveEndPoint,
-                                                error);
+                    var message = string.Format("Connection to [{0}, L{1}] failed. Error: {2}.",
+                                                conn.RemoteEndPoint, conn.LocalEndPoint, error);
                     Log.Error(message);
 
                     if (connectionClosed != null)
@@ -212,15 +214,19 @@ namespace EventStore.TestClient
 
                     if (failContextOnError)
                         context.Fail(reason: string.Format("Socket connection failed with error {0}.", error));
-                });
+                },
+                verbose: !InteractiveMode);
 
             typedConnection = new Connection(connection, new RawMessageFormatter(_bufferManager), new LengthPrefixMessageFramer());
             typedConnection.ConnectionClosed +=
                 (conn, error) =>
                 {
-                    Log.Info("Connection [{0}] was closed {1}",
-                                conn.EffectiveEndPoint,
-                                error == SocketError.Success ? "cleanly." : "with error: " + error + ".");
+                    if (!InteractiveMode || error != SocketError.Success)
+                    {
+                        Log.Info("Connection [{0}, L{1}] was closed {2}",
+                                 conn.RemoteEndPoint, conn.LocalEndPoint,
+                                 error == SocketError.Success ? "cleanly." : "with error: " + error + ".");
+                    }
 
                     if (connectionClosed != null)
                         connectionClosed(conn, error);
@@ -251,10 +257,10 @@ namespace EventStore.TestClient
                     catch (Exception ex)
                     {
                         Log.InfoException(ex,
-                                          "[{0}] ERROR for {1}. Connection will be closed.",
-                                          conn.EffectiveEndPoint,
+                                          "[{0}, L{1}] ERROR for {2}. Connection will be closed.",
+                                          conn.RemoteEndPoint, conn.LocalEndPoint,
                                           validPackage ? package.Command as object : "<invalid package>");
-                        conn.Close();
+                        conn.Close(ex.Message);
 
                         if (failContextOnError)
                             context.Fail(ex);

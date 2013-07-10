@@ -29,6 +29,7 @@ using System;
 using System.Threading;
 using EventStore.Common.Log;
 using EventStore.Common.Utils;
+using EventStore.Core.Messages;
 using EventStore.Core.Messaging;
 using EventStore.Core.Services.Monitoring.Stats;
 
@@ -107,7 +108,9 @@ namespace EventStore.Core.Bus
         {
             _queueStats.Start();
             Thread.BeginThreadAffinity(); // ensure we are not switching between OS threads. Required at least for v8.
-            
+
+            const int spinmax = 5000;
+            var iterationsCount = 0;
             while (!_stop)
             {
                 Message msg = null;
@@ -116,7 +119,16 @@ namespace EventStore.Core.Bus
                     if (!_queue.TryDequeue(out msg))
                     {
                         _queueStats.EnterIdle();
-                        Thread.Sleep(0);
+
+                        iterationsCount += 1;
+                        if (iterationsCount < spinmax)
+                        {
+                            //do nothing... spin
+                        }
+                        else
+                        {
+                            Thread.Sleep(1);
+                        }
                     }
                     else
                     {
@@ -133,7 +145,13 @@ namespace EventStore.Core.Bus
 
                             var elapsed = DateTime.UtcNow - start;
                             if (elapsed > _slowMsgThreshold)
-                                Log.Trace("SLOW QUEUE MSG [{0}]: {1} - {2}ms. Q: {3}/{4}.", Name, _queueStats.InProgressMessage.Name, (int)elapsed.TotalMilliseconds, cnt, _queue.Count);
+                            {
+                                Log.Trace("SLOW QUEUE MSG [{0}]: {1} - {2}ms. Q: {3}/{4}.",
+                                          Name, _queueStats.InProgressMessage.Name, (int)elapsed.TotalMilliseconds, cnt, _queue.Count);
+                                if (elapsed > QueuedHandler.VerySlowMsgThreshold && !(msg is SystemMessage.SystemInit))
+                                    Log.Error("---!!! VERY SLOW QUEUE MSG [{0}]: {1} - {2}ms. Q: {3}/{4}.",
+                                              Name, _queueStats.InProgressMessage.Name, (int)elapsed.TotalMilliseconds, cnt, _queue.Count);
+                            }
                         }
                         else
                         {

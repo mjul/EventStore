@@ -61,7 +61,7 @@ namespace EventStore.Projections.Core.Tests.Services.event_reader.multi_stream_r
         private FakeTimeProvider _fakeTimeProvider;
 
         [SetUp]
-        public void When()
+        public new void When()
         {
             _ab12Tag = new Dictionary<string, int> {{"a", 1}, {"b", 2}};
             _abStreams = new[] {"a", "b"};
@@ -69,7 +69,8 @@ namespace EventStore.Projections.Core.Tests.Services.event_reader.multi_stream_r
             _distibutionPointCorrelationId = Guid.NewGuid();
             _fakeTimeProvider = new FakeTimeProvider();
             _edp = new MultiStreamEventReader(
-                _bus, _distibutionPointCorrelationId, _abStreams, _ab12Tag, false, _fakeTimeProvider, stopOnEof: true);
+                _bus, _distibutionPointCorrelationId, null, _abStreams, _ab12Tag, false, _fakeTimeProvider,
+                stopOnEof: true);
             _edp.Resume();
             _firstEventId = Guid.NewGuid();
             _secondEventId = Guid.NewGuid();
@@ -83,7 +84,7 @@ namespace EventStore.Projections.Core.Tests.Services.event_reader.multi_stream_r
                             1, 50, Guid.NewGuid(), _firstEventId, 50, 0, "a", ExpectedVersion.Any, _fakeTimeProvider.Now,
                             PrepareFlags.SingleWrite | PrepareFlags.TransactionBegin | PrepareFlags.TransactionEnd,
                             "event_type1", new byte[] {1}, new byte[] {2}), null),
-                        }, "", 2, 1, true, 200));
+                        }, null, "", 2, 1, true, 200));
             _edp.Handle(
                 new ClientMessage.ReadStreamEventsForwardCompleted(
                     _distibutionPointCorrelationId, "b", 100, 100, ReadStreamResult.Success, 
@@ -95,20 +96,20 @@ namespace EventStore.Projections.Core.Tests.Services.event_reader.multi_stream_r
                             _fakeTimeProvider.Now,
                             PrepareFlags.SingleWrite | PrepareFlags.TransactionBegin | PrepareFlags.TransactionEnd,
                             "event_type1", new byte[] {1}, new byte[] {2}), null),
-                        }, "", 3, 2, true, 200));
+                        }, null, "", 3, 2, true, 200));
             _edp.Handle(
                 new ClientMessage.ReadStreamEventsForwardCompleted(
-                    _distibutionPointCorrelationId, "a", 100, 100, ReadStreamResult.Success, new ResolvedEvent[] { }, "", 2, 1, true, 400));
+                    _distibutionPointCorrelationId, "a", 100, 100, ReadStreamResult.Success, new ResolvedEvent[] { }, null, "", 2, 1, true, 400));
             _edp.Handle(
                 new ClientMessage.ReadStreamEventsForwardCompleted(
-                    _distibutionPointCorrelationId, "b", 100, 100, ReadStreamResult.Success, new ResolvedEvent[] { }, "", 3, 2, true, 400));
+                    _distibutionPointCorrelationId, "b", 100, 100, ReadStreamResult.Success, new ResolvedEvent[] { }, null, "", 3, 2, true, 400));
         }
 
         [Test]
         public void publishes_eof_message()
         {
-            Assert.AreEqual(1, _consumer.HandledMessages.OfType<ProjectionCoreServiceMessage.EventReaderEof>().Count());
-            var first = _consumer.HandledMessages.OfType<ProjectionCoreServiceMessage.EventReaderEof>().First();
+            Assert.AreEqual(1, _consumer.HandledMessages.OfType<ReaderSubscriptionMessage.EventReaderEof>().Count());
+            var first = _consumer.HandledMessages.OfType<ReaderSubscriptionMessage.EventReaderEof>().First();
             Assert.AreEqual(first.CorrelationId, _distibutionPointCorrelationId);
         }
 

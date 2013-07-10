@@ -56,19 +56,19 @@ namespace EventStore.Projections.Core.Tests.Services.event_reader.stream_reader
         }
 
         [SetUp]
-        public void When()
+        public new void When()
         {
             _publishWithCorrelationId = Guid.NewGuid();
             _distibutionPointCorrelationId = Guid.NewGuid();
-            _edp = new StreamEventReader(_bus, _distibutionPointCorrelationId, "stream", 0, new RealTimeProvider(), false);
+            _edp = new StreamEventReader(_bus, _distibutionPointCorrelationId, null, "stream", 0, new RealTimeProvider(), false);
             _edp.Resume();
             _firstEventId = Guid.NewGuid();
             _secondEventId = Guid.NewGuid();
             _edp.Pause();
             _edp.Handle(
                 new ClientMessage.ReadStreamEventsForwardCompleted(
-                    _distibutionPointCorrelationId, "stream", 100, 100, ReadStreamResult.NoStream, new ResolvedEvent[0], "", 
-                    -1, ExpectedVersion.NoStream, true, 200));
+                    _distibutionPointCorrelationId, "stream", 100, 100, ReadStreamResult.NoStream, new ResolvedEvent[0]
+                    , null, "", -1, ExpectedVersion.NoStream, true, 200));
         }
 
         [Test]
@@ -97,9 +97,9 @@ namespace EventStore.Projections.Core.Tests.Services.event_reader.stream_reader
         public void publishes_correct_committed_event_received_messages()
         {
             Assert.AreEqual(
-                1, _consumer.HandledMessages.OfType<ProjectionCoreServiceMessage.CommittedEventDistributed>().Count());
+                1, _consumer.HandledMessages.OfType<ReaderSubscriptionMessage.CommittedEventDistributed>().Count());
             var first =
-                _consumer.HandledMessages.OfType<ProjectionCoreServiceMessage.CommittedEventDistributed>().Single();
+                _consumer.HandledMessages.OfType<ReaderSubscriptionMessage.CommittedEventDistributed>().Single();
             Assert.IsNull(first.Data);
             Assert.AreEqual(200, first.SafeTransactionFileReaderJoinPosition);
         }

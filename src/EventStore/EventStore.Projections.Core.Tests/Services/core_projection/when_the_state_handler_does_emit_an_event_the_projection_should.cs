@@ -29,7 +29,9 @@
 using System;
 using System.Linq;
 using System.Text;
+using EventStore.Common.Utils;
 using EventStore.Core.Data;
+using EventStore.Core.Util;
 using EventStore.Projections.Core.Messages;
 using EventStore.Projections.Core.Services.Processing;
 using NUnit.Framework;
@@ -44,22 +46,20 @@ namespace EventStore.Projections.Core.Tests.Services.core_projection
 
         protected override void Given()
         {
-            NoStream("$projections-projection-state");
-            NoStream("$projections-projection-order");
-            AllWritesToSucceed("$projections-projection-order");
-            NoStream("$projections-projection-checkpoint");
-            NoStream(FakeProjectionStateHandler._emit1StreamId);
+            AllWritesSucceed();
+            NoOtherStreams();
         }
 
         protected override void When()
         {
             //projection subscribes here
             _causingEventId = Guid.NewGuid();
-            var committedEventReceived = ProjectionSubscriptionMessage.CommittedEventReceived.Sample(
-                Guid.Empty, _subscriptionId, new EventPosition(120, 110), "/event_category/1", -1, false,
-                ResolvedEvent.Sample(
-                    _causingEventId, "no_state_emit1_type", false, Encoding.UTF8.GetBytes("data"),
-                    Encoding.UTF8.GetBytes("metadata")), 0);
+            var committedEventReceived =
+                EventReaderSubscriptionMessage.CommittedEventReceived.Sample(
+                    new ResolvedEvent(
+                        "/event_category/1", -1, "/event_category/1", -1, false, new TFPos(120, 110),
+                        _causingEventId, "no_state_emit1_type", false, "data",
+                        "metadata"), _subscriptionId, 0);
             _coreProjection.Handle(committedEventReceived);
         }
 
@@ -68,15 +68,15 @@ namespace EventStore.Projections.Core.Tests.Services.core_projection
         {
             Assert.IsTrue(
                 _writeEventHandler.HandledMessages.Any(
-                    v => Encoding.UTF8.GetString(v.Events[0].Data) == FakeProjectionStateHandler._emit1Data));
+                    v => Helper.UTF8NoBom.GetString(v.Events[0].Data) == FakeProjectionStateHandler._emit1Data));
         }
 
         [Test]
         public void set_a_caused_by_position_attributes()
         {
-            var metadata = _writeEventHandler.HandledMessages[0].Events[0].Metadata.ParseJson<CheckpointTag>();
-            Assert.AreEqual(120, metadata.CommitPosition);
-            Assert.AreEqual(110, metadata.PreparePosition);
+            var metadata = _writeEventHandler.HandledMessages[0].Events[0].Metadata.ParseCheckpointTagVersionExtraJson(default(ProjectionVersion));
+            Assert.AreEqual(120, metadata.Tag.CommitPosition);
+            Assert.AreEqual(110, metadata.Tag.PreparePosition);
         }
     }
 }

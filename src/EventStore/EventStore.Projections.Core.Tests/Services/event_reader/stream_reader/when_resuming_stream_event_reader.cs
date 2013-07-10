@@ -48,10 +48,11 @@ namespace EventStore.Projections.Core.Tests.Services.event_reader.stream_reader
         private Guid _distibutionPointCorrelationId;
 
         [SetUp]
-        public void When()
+        public new void When()
         {
             _distibutionPointCorrelationId = Guid.NewGuid();
-            _edp = new StreamEventReader(_bus, _distibutionPointCorrelationId, "stream", 10, new RealTimeProvider(), false);
+            _edp = new StreamEventReader(
+                _bus, _distibutionPointCorrelationId, null, "stream", 10, new RealTimeProvider(), false);
             _edp.Resume();
         }
 
@@ -89,7 +90,7 @@ namespace EventStore.Projections.Core.Tests.Services.event_reader.stream_reader
                             10, 50, Guid.NewGuid(), Guid.NewGuid(), 50, 0, "stream", ExpectedVersion.Any, DateTime.UtcNow,
                             PrepareFlags.SingleWrite | PrepareFlags.TransactionBegin | PrepareFlags.TransactionEnd,
                             "event_type", new byte[0], new byte[0]))
-                    }, "", 11, 10, true, 100));
+                    }, null, "", 11, 10, true, 100));
         }
     }
 }

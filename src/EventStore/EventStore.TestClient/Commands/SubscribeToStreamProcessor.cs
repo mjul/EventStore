@@ -54,6 +54,13 @@ namespace EventStore.TestClient.Commands
                     {
                         switch (pkg.Command)
                         {
+                            case TcpCommand.SubscriptionConfirmation:
+                            {
+                                var dto = pkg.Data.Deserialize<TcpClientMessageDto.SubscriptionConfirmation>();
+                                context.Log.Info("Subscription to <{0}> WAS CONFIRMED! Subscribed at {1} ({2})", 
+                                                 streamByCorrId[pkg.CorrelationId], dto.LastCommitPosition, dto.LastEventNumber);
+                                break;
+                            }
                             case TcpCommand.StreamEventAppeared:
                             {
                                 var dto = pkg.Data.Deserialize<TcpClientMessageDto.StreamEventAppeared>();
@@ -66,12 +73,13 @@ namespace EventStore.TestClient.Commands
                                                  dto.Event.Event.EventStreamId,
                                                  dto.Event.Event.EventNumber,
                                                  dto.Event.Event.EventType,
-                                                 Encoding.UTF8.GetString(dto.Event.Event.Data ?? new byte[0]),
-                                                 Encoding.UTF8.GetString(dto.Event.Event.Metadata ?? new byte[0]));
+                                                 Common.Utils.Helper.UTF8NoBom.GetString(dto.Event.Event.Data ?? new byte[0]),
+                                                 Common.Utils.Helper.UTF8NoBom.GetString(dto.Event.Event.Metadata ?? new byte[0]));
                                 break;
                             }
                             case TcpCommand.SubscriptionDropped:
                             {
+                                pkg.Data.Deserialize<TcpClientMessageDto.SubscriptionDropped>();
                                 context.Log.Error("Subscription to <{0}> WAS DROPPED!", streamByCorrId[pkg.CorrelationId]);
                                 break;
                             }

@@ -37,6 +37,12 @@ namespace EventStore.Projections.Core.Tests.Services.core_projection.checkpoint_
     {
         private Exception _exception;
 
+        protected override void Given()
+        {
+            base.Given();
+            AllWritesSucceed();
+        }
+
         protected override void When()
         {
             base.When();
@@ -76,12 +82,6 @@ namespace EventStore.Projections.Core.Tests.Services.core_projection.checkpoint_
             _manager.Stopped();
         }
 
-        [Test, ExpectedException(typeof(InvalidOperationException))]
-        public void request_checkpoint_to_stop_throws_invalid_operation_exception()
-        {
-            _manager.RequestCheckpointToStop();
-        }
-
         [Test]
         public void accepts_event_processed()
         {
@@ -100,12 +100,14 @@ namespace EventStore.Projections.Core.Tests.Services.core_projection.checkpoint_
         public void accepts_checkpoint_suggested()
         {
             _manager.CheckpointSuggested(CheckpointTag.FromStreamPosition("stream", 11), 77.7f);
+            Assert.AreEqual(1, _projection._checkpointCompletedMessages.Count);
         }
 
-        [Test, ExpectedException(typeof(InvalidOperationException))]
-        public void checkpoint_suggested_at_the_start_position_throws_invalid_operation_exception()
+        [Test]
+        public void accepts_checkpoint_suggested_even_at_the_start_position_but_does_not_complete_it()
         {
             _manager.CheckpointSuggested(CheckpointTag.FromStreamPosition("stream", 10), 77.7f);
+            Assert.AreEqual(0, _projection._checkpointCompletedMessages.Count);
         }
 
 

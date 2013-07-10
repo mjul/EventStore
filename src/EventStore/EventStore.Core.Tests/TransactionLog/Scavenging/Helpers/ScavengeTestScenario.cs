@@ -12,9 +12,15 @@ namespace EventStore.Core.Tests.TransactionLog.Scavenging.Helpers
     [TestFixture]
     public abstract class ScavengeTestScenario: SpecificationWithDirectoryPerTestFixture
     {
+        private readonly int _metastreamMaxCount;
         private DbResult _dbResult;
         private LogRecord[][] _keptRecords;
         private bool _checked;
+
+        protected ScavengeTestScenario(int metastreamMaxCount = 1)
+        {
+            _metastreamMaxCount = metastreamMaxCount;
+        }
 
         public override void TestFixtureSetUp()
         {
@@ -25,14 +31,20 @@ namespace EventStore.Core.Tests.TransactionLog.Scavenging.Helpers
                                                1024*1024,
                                                0,
                                                new InMemoryCheckpoint(0),
-                                               new InMemoryCheckpoint(0));
+                                               new InMemoryCheckpoint(0),
+                                               new InMemoryCheckpoint(-1),
+                                               new InMemoryCheckpoint(-1));
             var dbCreationHelper = new TFChunkDbCreationHelper(dbConfig);
             _dbResult = CreateDb(dbCreationHelper);
             _keptRecords = KeptRecords(_dbResult);
 
-            var scavengeReadIndex = new ScavengeReadIndex(_dbResult.Streams);
+            _dbResult.Db.Config.WriterCheckpoint.Flush();
+            _dbResult.Db.Config.ChaserCheckpoint.Write(_dbResult.Db.Config.WriterCheckpoint.Read());
+            _dbResult.Db.Config.ChaserCheckpoint.Flush();
+
+            var scavengeReadIndex = new ScavengeReadIndex(_dbResult.Streams, _metastreamMaxCount);
             var scavenger = new TFChunkScavenger(_dbResult.Db, scavengeReadIndex);
-            scavenger.Scavenge(alwaysKeepScavenged: true);
+            scavenger.Scavenge(alwaysKeepScavenged: true, mergeChunks: false);
         }
 
         public override void TestFixtureTearDown()

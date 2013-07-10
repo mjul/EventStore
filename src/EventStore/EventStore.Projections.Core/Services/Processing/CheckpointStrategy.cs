@@ -27,57 +27,47 @@
 // 
 
 using System;
-using System.Collections.Generic;
-using System.Linq;
+using System.Security.Principal;
 using EventStore.Core.Bus;
 using EventStore.Core.Messages;
+using EventStore.Core.Messaging;
 using EventStore.Core.Services.TimerService;
-using EventStore.Projections.Core.Messages;
 
 namespace EventStore.Projections.Core.Services.Processing
 {
     public class CheckpointStrategy
     {
-        private readonly bool _allStreams;
-        private readonly HashSet<string> _categories;
-        private readonly HashSet<string> _streams;
-        private readonly bool _allEvents;
-        private readonly HashSet<string> _events;
         private readonly bool _byStream;
         private readonly bool _byCustomPartitions;
-        private readonly bool _useEventIndexes;
-        private readonly bool _reorderEvents;
-        private readonly int _processingLag;
-        private readonly bool _emitStateUpdated;
-        private readonly EventFilter _eventFilter;
-        private readonly PositionTagger _positionTagger;
         private readonly bool _useCheckpoints;
+        private readonly bool _definesStateTransform;
+        private readonly IReaderStrategy _readerStrategy;
+        private readonly IPrincipal _runAs;
 
         public class Builder : QuerySourceProcessingStrategyBuilder
         {
-            public CheckpointStrategy Build(ProjectionConfig config)
+            public CheckpointStrategy Build(ProjectionConfig config, IPrincipal runAs, IReaderStrategy readerStrategy)
             {
-                base.Validate(config);
+                base.Validate();
                 return new CheckpointStrategy(
-                    _allStreams, ToSet(_categories), ToSet(_streams), _allEvents, ToSet(_events), _byStream,
-                    _byCustomPartitions, _options.UseEventIndexes, _options.ReorderEvents, _options.ProcessingLag,
-                    _options.EmitStateUpdated, config.CheckpointsEnabled);
+                    _byStream, _byCustomPartitions, config.CheckpointsEnabled, _definesStateTransform, runAs, readerStrategy);
+            }
+
+            public void Validate(ProjectionConfig config)
+            {
+                base.Validate();
+                if (_definesStateTransform && !config.EmitEventEnabled)
+                    throw new InvalidOperationException("transformBy/filterBy requires EmitEventEnabled mode");
             }
         }
 
-        public EventFilter EventFilter
+        public static CheckpointStrategy Create(
+            ISourceDefinitionConfigurator sources, ProjectionConfig config, ITimeProvider timeProvider)
         {
-            get { return _eventFilter; }
-        }
-
-        public PositionTagger PositionTagger
-        {
-            get { return _positionTagger; }
-        }
-
-        public bool EmitStateUpdated
-        {
-            get { return _emitStateUpdated; }
+            var builder = new Builder();
+            sources.ConfigureSourceProcessingStrategy(builder);
+            return builder.Build(
+                config, config.RunAs, Processing.ReaderStrategy.Create(sources, timeProvider, config.RunAs));
         }
 
         public bool UseCheckpoints
@@ -85,155 +75,21 @@ namespace EventStore.Projections.Core.Services.Processing
             get { return _useCheckpoints; }
         }
 
-        public bool IsEmiEnabled()
+        public IReaderStrategy ReaderStrategy
         {
-            return _streams == null || _streams.Count <= 1;
-        }
-
-        public EventReader CreatePausedEventReader(
-            Guid eventReaderId, IPublisher publisher, CheckpointTag checkpointTag, bool stopOnEof)
-        {
-            if (_allStreams && _useEventIndexes && _events != null && _events.Count == 1)
-            {
-                var streamName = checkpointTag.Streams.Keys.First();
-                return CreatePausedStreamEventReader(
-                    eventReaderId, publisher, checkpointTag, streamName, stopOnEof, resolveLinkTos: true);
-            }
-            if (_allStreams && _useEventIndexes && _events != null && _events.Count > 1)
-            {
-                IEnumerable<string> streams = GetEventIndexStreams();
-                return CreatePausedEventIndexEventReader(
-                    eventReaderId, publisher, checkpointTag, stopOnEof, true, streams);
-            }
-            if (_allStreams)
-            {
-                var eventReader = new TransactionFileEventReader(
-                    publisher, eventReaderId,
-                    new EventPosition(checkpointTag.CommitPosition.Value, checkpointTag.PreparePosition.Value),
-                    new RealTimeProvider(), deliverEndOfTFPosition: true, stopOnEof: stopOnEof);
-                return eventReader;
-            }
-            if (_streams != null && _streams.Count == 1)
-            {
-                var streamName = checkpointTag.Streams.Keys.First();
-                //TODO: handle if not the same
-                return CreatePausedStreamEventReader(
-                    eventReaderId, publisher, checkpointTag, streamName, stopOnEof, resolveLinkTos: true);
-            }
-            if (_categories != null && _categories.Count == 1)
-            {
-                var streamName = checkpointTag.Streams.Keys.First();
-                return CreatePausedStreamEventReader(
-                    eventReaderId, publisher, checkpointTag, streamName, stopOnEof, resolveLinkTos: true);
-            }
-            if (_streams != null && _streams.Count > 1)
-            {
-                return CreatePausedMultiStreamEventReader(
-                    eventReaderId, publisher, checkpointTag, stopOnEof, true, _streams);
-            }
-            throw new NotSupportedException();
-        }
-
-        private static EventReader CreatePausedStreamEventReader(
-            Guid eventReaderId, IPublisher publisher, CheckpointTag checkpointTag, string streamName, bool stopOnEof,
-            bool resolveLinkTos)
-        {
-            var lastProcessedSequenceNumber = checkpointTag.Streams.Values.First();
-            var fromSequenceNumber = lastProcessedSequenceNumber + 1;
-            var eventReader = new StreamEventReader(
-                publisher, eventReaderId, streamName, fromSequenceNumber, new RealTimeProvider(), resolveLinkTos,
-                stopOnEof);
-            return eventReader;
-        }
-
-        private static EventReader CreatePausedEventIndexEventReader(
-            Guid eventReaderId, IPublisher publisher, CheckpointTag checkpointTag, bool stopOnEof, bool resolveLinkTos,
-            IEnumerable<string> streams)
-        {
-            var nextPositions = checkpointTag.Streams.ToDictionary(v => v.Key, v => v.Value + 1);
-
-            return new EventIndexEventReader(
-                publisher, eventReaderId, streams.ToArray(), nextPositions, resolveLinkTos, new RealTimeProvider(),
-                stopOnEof);
-        }
-
-        private static EventReader CreatePausedMultiStreamEventReader(
-            Guid eventReaderId, IPublisher publisher, CheckpointTag checkpointTag, bool stopOnEof, bool resolveLinkTos,
-            IEnumerable<string> streams)
-        {
-            var nextPositions = checkpointTag.Streams.ToDictionary(v => v.Key, v => v.Value + 1);
-
-            return new MultiStreamEventReader(
-                publisher, eventReaderId, streams.ToArray(), nextPositions, resolveLinkTos, new RealTimeProvider(),
-                stopOnEof);
+            get { return _readerStrategy; }
         }
 
         private CheckpointStrategy(
-            bool allStreams, HashSet<string> categories, HashSet<string> streams, bool allEvents, HashSet<string> events,
-            bool byStream, bool byCustomPartitions, bool useEventIndexes, bool reorderEvents, int processingLag,
-            bool emitStateUpdated, bool useCheckpoints)
+            bool byStream, bool byCustomPartitions, bool useCheckpoints, bool definesStateTransform, IPrincipal runAs,
+            IReaderStrategy readerStrategy)
         {
-            _allStreams = allStreams;
-            _categories = categories;
-            _streams = streams;
-            _allEvents = allEvents;
-            _events = events;
+            _readerStrategy = readerStrategy;
             _byStream = byStream;
             _byCustomPartitions = byCustomPartitions;
-            _useEventIndexes = useEventIndexes;
-            _reorderEvents = reorderEvents;
-            _processingLag = processingLag;
-            _emitStateUpdated = emitStateUpdated;
             _useCheckpoints = useCheckpoints;
-
-            _eventFilter = CreateEventFilter();
-            _positionTagger = CreatePositionTagger();
-        }
-
-        private EventFilter CreateEventFilter()
-        {
-            if (_allStreams && _useEventIndexes && _events != null && _events.Count == 1)
-                return new IndexedEventTypeEventFilter(_events.First());
-            if (_allStreams && _useEventIndexes && _events != null && _events.Count > 1)
-                return new IndexedEventTypesEventFilter(_events.ToArray());
-            if (_allStreams)
-                return new TransactionFileEventFilter(_allEvents, _events);
-            if (_categories != null && _categories.Count == 1)
-                return new CategoryEventFilter(_categories.First(), _allEvents, _events);
-            if (_categories != null)
-                throw new NotSupportedException();
-            if (_streams != null && _streams.Count == 1)
-                return new StreamEventFilter(_streams.First(), _allEvents, _events);
-            if (_streams != null && _streams.Count > 1)
-                return new MultiStreamEventFilter(_streams, _allEvents, _events);
-            throw new NotSupportedException();
-        }
-
-        private PositionTagger CreatePositionTagger()
-        {
-            if (_allStreams && _useEventIndexes && _events != null && _events.Count == 1)
-                return new StreamPositionTagger("$et-" + _events.First());
-            if (_allStreams && _useEventIndexes && _events != null && _events.Count > 1)
-                return new MultiStreamPositionTagger(GetEventIndexStreams());
-            if (_allStreams && _reorderEvents)
-                return new PreparePositionTagger();
-            if (_allStreams)
-                return new TransactionFilePositionTagger();
-            if (_categories != null && _categories.Count == 1)
-                //TODO: '-' is a hardcoded separator
-                return new StreamPositionTagger("$ce-" + _categories.First());
-            if (_categories != null)
-                throw new NotSupportedException();
-            if (_streams != null && _streams.Count == 1)
-                return new StreamPositionTagger(_streams.First());
-            if (_streams != null && _streams.Count > 1)
-                return new MultiStreamPositionTagger(_streams.ToArray());
-            throw new NotSupportedException();
-        }
-
-        private string[] GetEventIndexStreams()
-        {
-            return _events.Select(v => "$et-" + v).ToArray();
+            _definesStateTransform = definesStateTransform;
+            _runAs = runAs;
         }
 
         public StatePartitionSelector CreateStatePartitionSelector(IProjectionStateHandler projectionStateHandler)
@@ -246,52 +102,34 @@ namespace EventStore.Projections.Core.Services.Processing
         }
 
         public ICoreProjectionCheckpointManager CreateCheckpointManager(
-            ICoreProjection coreProjection, Guid projectionCorrelationId, IPublisher publisher,
+            Guid projectionCorrelationId, ProjectionVersion projectionVersion, IPublisher publisher,
             RequestResponseDispatcher
                 <ClientMessage.ReadStreamEventsBackward, ClientMessage.ReadStreamEventsBackwardCompleted> readDispatcher,
             RequestResponseDispatcher<ClientMessage.WriteEvents, ClientMessage.WriteEventsCompleted> writeDispatcher,
             ProjectionConfig projectionConfig, string name, ProjectionNamesBuilder namingBuilder)
         {
             var emitAny = projectionConfig.EmitEventEnabled;
-            var emitPartitionCheckpoints = UseCheckpoints && !EmitStateUpdated && (_byCustomPartitions || _byStream);
+            var emitPartitionCheckpoints = UseCheckpoints && (_byCustomPartitions || _byStream);
+            var resultEmitter = _definesStateTransform
+                                    ? new ResultEmitter(namingBuilder)
+                                    : (IResultEmitter) new NoopResultEmitter();
 
             //NOTE: not emitting one-time/transient projections are always handled by default checkpoint manager
             // as they don't depend on stable event order
-            if (emitAny && _allStreams && _useEventIndexes && _events != null && _events.Count > 1)
+            if (emitAny && !ReaderStrategy.IsReadingOrderRepeatable)
             {
                 return new MultiStreamMultiOutputCheckpointManager(
-                    coreProjection, publisher, projectionCorrelationId, readDispatcher, writeDispatcher,
-                    projectionConfig, name, PositionTagger, namingBuilder, UseCheckpoints, EmitStateUpdated,
-                    emitPartitionCheckpoints);
-            }
-            else if (emitAny && _streams != null && _streams.Count > 1)
-            {
-                return new MultiStreamMultiOutputCheckpointManager(
-                    coreProjection, publisher, projectionCorrelationId, readDispatcher, writeDispatcher,
-                    projectionConfig, name, PositionTagger, namingBuilder, UseCheckpoints, EmitStateUpdated,
+                    publisher, projectionCorrelationId, projectionVersion, _runAs, readDispatcher, writeDispatcher,
+                    projectionConfig, name, ReaderStrategy.PositionTagger, namingBuilder, resultEmitter, UseCheckpoints,
                     emitPartitionCheckpoints);
             }
             else
             {
                 return new DefaultCheckpointManager(
-                    coreProjection, publisher, projectionCorrelationId, readDispatcher, writeDispatcher,
-                    projectionConfig, name, PositionTagger, namingBuilder, UseCheckpoints, EmitStateUpdated,
+                    publisher, projectionCorrelationId, projectionVersion, _runAs, readDispatcher, writeDispatcher,
+                    projectionConfig, name, ReaderStrategy.PositionTagger, namingBuilder, resultEmitter, UseCheckpoints,
                     emitPartitionCheckpoints);
             }
-        }
-
-        public IProjectionSubscription CreateProjectionSubscription(
-            CheckpointTag fromCheckpointTag, Guid projectionCorrelationId, Guid subscriptionId,
-            ICoreProjection projection, long checkpointUnhandledBytesThreshold, bool stopOnEof)
-        {
-            if (_reorderEvents)
-                return new EventReorderingProjectionSubscription(
-                    projectionCorrelationId, subscriptionId, fromCheckpointTag, projection, projection, projection,
-                    projection, this, checkpointUnhandledBytesThreshold, _processingLag, stopOnEof);
-            else
-                return new ProjectionSubscription(
-                    projectionCorrelationId, subscriptionId, fromCheckpointTag, projection, projection, projection,
-                    projection, this, checkpointUnhandledBytesThreshold, stopOnEof);
         }
     }
 }

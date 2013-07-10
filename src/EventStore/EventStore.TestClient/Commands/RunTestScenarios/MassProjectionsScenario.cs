@@ -39,8 +39,8 @@ namespace EventStore.TestClient.Commands.RunTestScenarios
     {
         private readonly Random _random = new Random();
 
-        public MassProjectionsScenario(Action<IPEndPoint, byte[]> directSendOverTcp, int maxConcurrentRequests, int threads, int streams, int eventsPerStream, int streamDeleteStep, string dbParentPath) 
-            : base(directSendOverTcp, maxConcurrentRequests, threads, streams, eventsPerStream, streamDeleteStep, dbParentPath)
+        public MassProjectionsScenario(Action<IPEndPoint, byte[]> directSendOverTcp, int maxConcurrentRequests, int threads, int streams, int eventsPerStream, int streamDeleteStep, string dbParentPath, NodeConnectionInfo customNode)
+            : base(directSendOverTcp, maxConcurrentRequests, threads, streams, eventsPerStream, streamDeleteStep, dbParentPath, customNode)
         {
         }
 
@@ -101,7 +101,7 @@ namespace EventStore.TestClient.Commands.RunTestScenarios
 
                 success = CheckProjectionState(bankProjections[bankProjections.Count - 1], 
                                                "success", 
-                                               x => x == EventsPerStream.ToString());
+                                               x => x == (EventsPerStream - 1).ToString());
                 if (success)
                     break;
 
@@ -122,7 +122,7 @@ namespace EventStore.TestClient.Commands.RunTestScenarios
 
                 success = CheckProjectionState(bankProjections[bankProjections.Count - 1],
                                                "success",
-                                               x => x == EventsPerStream.ToString());
+                                               x => x == (EventsPerStream - 1).ToString());
 
                 if (success)
                     break;
@@ -172,14 +172,14 @@ namespace EventStore.TestClient.Commands.RunTestScenarios
                         if (enable)
                         {
                             if (!isRunning)
-                                manager.Enable(projection);
+                                manager.Enable(projection, AdminCredentials);
                             else 
                                 Log.Info("Projection '{0}' is already running and will not be enabled.", projection);
                         }
                         else
                         {
                             if (isRunning)
-                                manager.Disable(projection);
+                                manager.Disable(projection, AdminCredentials);
                             else
                                 Log.Info("Projection '{0}' is already not running and will not be disabled again.", projection);
                         }

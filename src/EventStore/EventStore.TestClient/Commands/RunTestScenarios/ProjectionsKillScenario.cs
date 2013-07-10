@@ -34,15 +34,21 @@ using System.Net;
 using System.Threading;
 using System.Threading.Tasks;
 using EventStore.ClientAPI;
-using EventStore.Core.Services.Transport.Http.Codecs;
 using EventStore.TestClient.Commands.DvuBasic;
 
 namespace EventStore.TestClient.Commands.RunTestScenarios
 {
     internal class ProjectionsKillScenario : ProjectionsScenarioBase
     {
-        public ProjectionsKillScenario(Action<IPEndPoint, byte[]> directSendOverTcp, int maxConcurrentRequests, int connections, int streams, int eventsPerStream, int streamDeleteStep, string dbParentPath)
-            : base(directSendOverTcp, maxConcurrentRequests, connections, streams, eventsPerStream, streamDeleteStep, dbParentPath)
+        public ProjectionsKillScenario(Action<IPEndPoint, byte[]> directSendOverTcp, 
+                                       int maxConcurrentRequests, 
+                                       int connections, 
+                                       int streams, 
+                                       int eventsPerStream, 
+                                       int streamDeleteStep, 
+                                       string dbParentPath,
+                                       NodeConnectionInfo customNode)
+            : base(directSendOverTcp, maxConcurrentRequests, connections, streams, eventsPerStream, streamDeleteStep, dbParentPath, customNode)
         {
         }
 
@@ -70,7 +76,7 @@ namespace EventStore.TestClient.Commands.RunTestScenarios
 
             var success = false;
             var expectedAllEventsCount = (Streams * EventsPerStream).ToString();
-            var expectedEventsPerStream = EventsPerStream.ToString();
+            var lastExpectedEventVersion = (EventsPerStream - 1).ToString();
 
             var isWatchStarted = false;
             
@@ -89,7 +95,7 @@ namespace EventStore.TestClient.Commands.RunTestScenarios
                 }
 
                 success = CheckProjectionState(countItem, "count", x => x == expectedAllEventsCount)
-                       && CheckProjectionState(sumCheckForBankAccount0, "success", x => x == expectedEventsPerStream);
+                       && CheckProjectionState(sumCheckForBankAccount0, "success", x => x == lastExpectedEventVersion);
 
                 if (success)
                     break;
@@ -147,7 +153,7 @@ namespace EventStore.TestClient.Commands.RunTestScenarios
                 }})
 ", GetIterationCode());
 
-            projectionManager.CreateContinuous(countItemsProjectionName, countItemsProjection);
+            projectionManager.CreateContinuous(countItemsProjectionName, countItemsProjection, AdminCredentials);
             return countItemsProjectionName;
         }
 
@@ -190,8 +196,8 @@ namespace EventStore.TestClient.Commands.RunTestScenarios
                     }}
                 }})                
 ", GetIterationCode());
-            
-            GetProjectionsManager().CreateContinuous(countItemsProjectionName, countItemsProjection);
+
+            GetProjectionsManager().CreateContinuous(countItemsProjectionName, countItemsProjection, AdminCredentials);
 
             return countItemsProjectionName;
         }

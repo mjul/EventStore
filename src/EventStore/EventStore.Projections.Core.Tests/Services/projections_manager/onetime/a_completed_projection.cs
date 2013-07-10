@@ -27,11 +27,12 @@
 // 
 
 using System;
+using System.Collections.Generic;
 using System.Linq;
+using EventStore.Core.Data;
 using EventStore.Core.Messaging;
 using EventStore.Projections.Core.Messages;
 using EventStore.Projections.Core.Services.Management;
-using EventStore.Projections.Core.Services.Processing;
 using NUnit.Framework;
 
 namespace EventStore.Projections.Core.Tests.Services.projections_manager.onetime
@@ -47,29 +48,33 @@ namespace EventStore.Projections.Core.Tests.Services.projections_manager.onetime
                 base.Given();
             }
 
-            protected override void When()
+            protected override IEnumerable<WhenStep> When()
             {
-                base.When();
+                foreach (var m in base.When()) yield return m;
+
                 var readerAssignedMessage =
-                    _consumer.HandledMessages.OfType<ProjectionSubscriptionManagement.ReaderAssigned>().LastOrDefault();
+                    _consumer.HandledMessages.OfType<ReaderSubscriptionManagement.ReaderAssignedReader>().LastOrDefault();
                 Assert.IsNotNull(readerAssignedMessage);
                 _reader = readerAssignedMessage.ReaderId;
 
-                _bus.Publish(
-                    new ProjectionCoreServiceMessage.CommittedEventDistributed(
-                        _reader, new EventPosition(100, 50), "stream", 1, "stream", 1, false,
-                        ResolvedEvent.Sample(Guid.NewGuid(), "type", false, new byte[0], new byte[0]), 100, 33.3f));
-                _bus.Publish(new ProjectionCoreServiceMessage.EventReaderEof(_reader));
+                yield return (
+                    ReaderSubscriptionMessage.CommittedEventDistributed.Sample(
+                        _reader, new TFPos(100, 50), new TFPos(100, 50), "stream", 1, "stream", 1, false, Guid.NewGuid(), "type",
+                        false, new byte[0], new byte[0], 100, 33.3f));
+                yield return (new ReaderSubscriptionMessage.EventReaderEof(_reader));
             }
         }
 
         [TestFixture]
         public class when_stopping : Base
         {
-            protected override void When()
+            protected override IEnumerable<WhenStep> When()
             {
-                base.When();
-                _manager.Handle(new ProjectionManagementMessage.Disable(new PublishEnvelope(_bus), _projectionName));
+                foreach (var m in base.When()) yield return m;
+
+                yield return
+                    (new ProjectionManagementMessage.Disable(
+                        new PublishEnvelope(_bus), _projectionName, ProjectionManagementMessage.RunAs.Anonymous));
             }
 
             [Test]
@@ -105,14 +110,16 @@ namespace EventStore.Projections.Core.Tests.Services.projections_manager.onetime
                              .Enabled);
             }
         }
-        [TestFixture]
 
+        [TestFixture]
         public class when_starting : Base
         {
-            protected override void When()
+            protected override IEnumerable<WhenStep> When()
             {
-                base.When();
-                _manager.Handle(new ProjectionManagementMessage.Enable(new PublishEnvelope(_bus), _projectionName));
+                foreach (var m in base.When()) yield return m;
+                yield return
+                    (new ProjectionManagementMessage.Enable(
+                        new PublishEnvelope(_bus), _projectionName, ProjectionManagementMessage.RunAs.Anonymous));
             }
 
             [Test]

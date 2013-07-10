@@ -50,20 +50,19 @@ namespace EventStore.Projections.Core.Tests.Services.event_reordering_projection
                     builder.FromStream("a");
                     builder.FromStream("b");
                     builder.AllEvents();
-                    builder.SetEmitStateUpdated();
                     builder.SetReorderEvents(true);
                     builder.SetProcessingLag(1000); // ms
                 };
         }
 
-        protected override IProjectionSubscription CreateProjectionSubscription()
+        protected override IReaderSubscription CreateProjectionSubscription()
         {
-            return new EventReorderingProjectionSubscription(
-                _projectionCorrelationId, Guid.NewGuid(),
+            return new EventReorderingReaderSubscription(_bus, 
+                _projectionCorrelationId, 
                 CheckpointTag.FromStreamPositions(
                     new Dictionary<string, int> {{"a", ExpectedVersion.NoStream}, {"b", ExpectedVersion.NoStream}}),
-                _eventHandler, _checkpointHandler, _progressHandler, _eofHandler, _checkpointStrategy,
-                _checkpointUnhandledBytesThreshold, _processingLagMs);
+                _readerStrategy,
+                _checkpointUnhandledBytesThreshold, _checkpointProcessedEventsThreshold, _processingLagMs);
         }
     }
 }

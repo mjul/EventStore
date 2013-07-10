@@ -29,6 +29,7 @@
 using System;
 using EventStore.Projections.Core.Services.Processing;
 using NUnit.Framework;
+using EventStore.Projections.Core.Services;
 
 namespace EventStore.Projections.Core.Tests.Services.projections_manager.v8
 {
@@ -46,7 +47,7 @@ namespace EventStore.Projections.Core.Tests.Services.projections_manager.v8
                     type1: function(state, event) {
                         return state;
                     },
-                });
+                }).transformBy(function(s) { return s;});
             ";
         }
 
@@ -59,6 +60,13 @@ namespace EventStore.Projections.Core.Tests.Services.projections_manager.v8
                 "", CheckpointTag.FromPosition(20, 10), "stream1", "type1", "category",
                 Guid.NewGuid(), 0, "metadata", @"{""a"":""b""}", out state, out emittedEvents);
             Assert.IsTrue(state.Contains("\"test\":\"1\""));
+        }
+
+        [Test, Category("v8")]
+        public void transform_state_should_return_initialized_state()
+        {
+            var result = _stateHandler.TransformStateToResult();
+            Assert.IsTrue(result.Contains("\"test\":\"1\""));
         }
     }
 }

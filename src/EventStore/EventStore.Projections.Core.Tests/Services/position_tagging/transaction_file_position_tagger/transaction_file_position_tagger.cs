@@ -27,7 +27,10 @@
 // 
 
 using System;
+using System.Collections.Generic;
 using System.Text;
+using EventStore.Common.Utils;
+using EventStore.Core.Data;
 using EventStore.Projections.Core.Messages;
 using EventStore.Projections.Core.Services.Processing;
 using NUnit.Framework;
@@ -37,22 +40,28 @@ namespace EventStore.Projections.Core.Tests.Services.position_tagging.transactio
     [TestFixture]
     public class transaction_file_position_tagger
     {
-        private ProjectionCoreServiceMessage.CommittedEventDistributed _zeroEvent;
-        private ProjectionCoreServiceMessage.CommittedEventDistributed _firstEvent;
-        private ProjectionCoreServiceMessage.CommittedEventDistributed _secondEvent;
+        private ReaderSubscriptionMessage.CommittedEventDistributed _zeroEvent;
+        private ReaderSubscriptionMessage.CommittedEventDistributed _firstEvent;
+        private ReaderSubscriptionMessage.CommittedEventDistributed _secondEvent;
 
         [SetUp]
         public void setup()
         {
-            _zeroEvent = new ProjectionCoreServiceMessage.CommittedEventDistributed(Guid.NewGuid(), new EventPosition(10, 0), "stream", 0, false, ResolvedEvent.Sample(Guid.NewGuid(), "StreamCreated", false, new byte[0], new byte[0]));
-            _firstEvent = new ProjectionCoreServiceMessage.CommittedEventDistributed(Guid.NewGuid(), new EventPosition(30, 20), "stream", 1, false, ResolvedEvent.Sample(Guid.NewGuid(), "Data", true, Encoding.UTF8.GetBytes("{}"), new byte[0]));
-            _secondEvent = new ProjectionCoreServiceMessage.CommittedEventDistributed(Guid.NewGuid(), new EventPosition(50, 40), "stream", 2, false, ResolvedEvent.Sample(Guid.NewGuid(), "Data", true, Encoding.UTF8.GetBytes("{}"), new byte[0]));
+            _zeroEvent = ReaderSubscriptionMessage.CommittedEventDistributed.Sample(
+                Guid.NewGuid(), new TFPos(10, 0), "stream", 0, false, Guid.NewGuid(), "StreamCreated", false,
+                new byte[0], new byte[0]);
+            _firstEvent = ReaderSubscriptionMessage.CommittedEventDistributed.Sample(
+                Guid.NewGuid(), new TFPos(30, 20), "stream", 1, false, Guid.NewGuid(), "Data", true,
+                Helper.UTF8NoBom.GetBytes("{}"), new byte[0]);
+            _secondEvent = ReaderSubscriptionMessage.CommittedEventDistributed.Sample(
+                Guid.NewGuid(), new TFPos(50, 40), "stream", 2, false, Guid.NewGuid(), "Data", true,
+                Helper.UTF8NoBom.GetBytes("{}"), new byte[0]);
         }
 
         [Test]
         public void can_be_created()
         {
-            var t = new TransactionFilePositionTagger();
+            new TransactionFilePositionTagger();
         }
 
         [Test]
@@ -87,12 +96,29 @@ namespace EventStore.Projections.Core.Tests.Services.position_tagging.transactio
         }
 
         [Test]
-        public void tream_checkpoint_tag_is_incompatible()
+        public void stream_checkpoint_tag_is_incompatible()
         {
             var t = new TransactionFilePositionTagger();
             Assert.IsFalse(t.IsCompatible(CheckpointTag.FromStreamPosition("stream2", 100)));
         }
 
+        [Test]
+        public void adjust_compatible_tag_returns_the_same_tag()
+        {
+            var t = new TransactionFilePositionTagger();
+            var tag = CheckpointTag.FromPosition(100, 50);
+            Assert.AreSame(tag, t.AdjustTag(tag));
+        }
+
+        [Test]
+        public void can_adjust_tf_position_tag()
+        {
+            var t = new TransactionFilePositionTagger();
+            var tag = CheckpointTag.FromPosition(100, 50);
+            var original = CheckpointTag.FromEventTypeIndexPositions(
+                new TFPos(100, 50), new Dictionary<string, int> {{"type1", 1}, {"type2", 2}});
+            Assert.AreEqual(tag, t.AdjustTag(original));
+        }
         [Test]
         public void zero_position_tag_is_before_first_event_possible()
         {
@@ -123,6 +149,5 @@ namespace EventStore.Projections.Core.Tests.Services.position_tagging.transactio
             Assert.AreEqual(zeroEvent2, zeroEvent);
             Assert.AreEqual(second, second2);
         }
-
     }
 }

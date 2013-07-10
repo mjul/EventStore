@@ -26,8 +26,11 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 // 
 
+using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Text;
+using EventStore.Common.Utils;
 using EventStore.Core.Bus;
 using EventStore.Core.Messages;
 using EventStore.Core.Messaging;
@@ -49,13 +52,16 @@ namespace EventStore.Projections.Core.Tests.Services.projections_manager
             AllWritesQueueUp();
         }
 
-        protected override void When()
+        protected override IEnumerable<WhenStep> When()
         {
-            _manager.Handle(
+            yield return new SystemMessage.BecomeMaster(Guid.NewGuid());
+            yield return
                 new ProjectionManagementMessage.Post(
-                    new PublishEnvelope(_bus), ProjectionMode.Continuous, _projectionName, "JS",
-                    @"fromAll().whenAny(function(s,e){return s;});", enabled: true, checkpointsEnabled: true, emitEnabled: true));
+                    new PublishEnvelope(_bus), ProjectionMode.Continuous, _projectionName,
+                    ProjectionManagementMessage.RunAs.System, "JS", @"fromAll().whenAny(function(s,e){return s;});",
+                    enabled: true, checkpointsEnabled: true, emitEnabled: true);
             OneWriteCompletes();
+            yield return Yield;
         }
 
         [Test, Category("v8")]
@@ -73,12 +79,11 @@ namespace EventStore.Projections.Core.Tests.Services.projections_manager
         public void a_projection_created_event_is_written()
         {
             Assert.AreEqual(
-                "ProjectionCreated",
+                "$ProjectionCreated",
                 _consumer.HandledMessages.OfType<ClientMessage.WriteEvents>().First().Events[0].EventType);
             Assert.AreEqual(
                 _projectionName,
-                Encoding.UTF8.GetString(
-                    _consumer.HandledMessages.OfType<ClientMessage.WriteEvents>().First().Events[0].Data));
+                Helper.UTF8NoBom.GetString(_consumer.HandledMessages.OfType<ClientMessage.WriteEvents>().First().Events[0].Data));
         }
 
         [Test, Category("v8")]

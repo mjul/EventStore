@@ -29,6 +29,7 @@
 using System;
 using System.Linq;
 using EventStore.Core.Messages;
+using EventStore.Core.Util;
 using EventStore.Projections.Core.Services.Processing;
 using NUnit.Framework;
 
@@ -42,14 +43,17 @@ namespace EventStore.Projections.Core.Tests.Services.core_projection.emitted_str
 
         protected override void Given()
         {
-            ExistingEvent("test_stream", "type", @"{""CommitPosition"": 100, ""PreparePosition"": 50}", "data");
+            ExistingEvent("test_stream", "type", @"{""c"": 100, ""p"": 50}", "data");
         }
 
         [SetUp]
         public void setup()
         {
             _readyHandler = new TestCheckpointManagerMessageHandler();
-            _stream = new EmittedStream("test_stream", CheckpointTag.FromPosition(0, -1), _bus, _readyHandler, maxWriteBatchLength: 50);
+            _stream = new EmittedStream(
+                "test_stream", new ProjectionVersion(1, 0, 0), null, new TransactionFilePositionTagger(),
+                CheckpointTag.FromPosition(0, -1), CheckpointTag.FromPosition(0, -1), _readDispatcher, _writeDispatcher,
+                _readyHandler, maxWriteBatchLength: 50);
             _stream.Start();
         }
 
@@ -57,8 +61,12 @@ namespace EventStore.Projections.Core.Tests.Services.core_projection.emitted_str
         public void does_not_publish_already_published_events()
         {
             _stream.EmitEvents(
-                new[] {new EmittedEvent("test_stream", Guid.NewGuid(), "type", "data",
-                CheckpointTag.FromPosition(100, 50), CheckpointTag.FromPosition(40, 20))});
+                new[]
+                    {
+                        new EmittedDataEvent(
+                    "test_stream", Guid.NewGuid(), "type", "data", null, CheckpointTag.FromPosition(100, 50),
+                    CheckpointTag.FromPosition(40, 20))
+                    });
             Assert.AreEqual(0, _consumer.HandledMessages.OfType<ClientMessage.WriteEvents>().Count());
         }
 
@@ -66,17 +74,26 @@ namespace EventStore.Projections.Core.Tests.Services.core_projection.emitted_str
         public void publishes_not_yet_published_events_if_expected_tag_is_the_same()
         {
             _stream.EmitEvents(
-                new[] {new EmittedEvent("test_stream", Guid.NewGuid(), "type", "data",
-                CheckpointTag.FromPosition(200, 150), CheckpointTag.FromPosition(100, 50))});
+                new[]
+                    {
+                        new EmittedDataEvent(
+                    "test_stream", Guid.NewGuid(), "type", "data", null, CheckpointTag.FromPosition(200, 150),
+                    CheckpointTag.FromPosition(100, 50))
+                    });
             Assert.AreEqual(1, _consumer.HandledMessages.OfType<ClientMessage.WriteEvents>().Count());
         }
 
         [Test]
         public void does_not_publish_not_yet_published_events_if_expected_tag_is_before_last_event_tag()
         {
+            //TODO: is it corrupted dB case? 
             _stream.EmitEvents(
-                new[] { new EmittedEvent("test_stream", Guid.NewGuid(), "type", "data",
-                CheckpointTag.FromPosition(200, 150), CheckpointTag.FromPosition(40, 20)) });
+                new[]
+                    {
+                        new EmittedDataEvent(
+                    "test_stream", Guid.NewGuid(), "type", "data", null, CheckpointTag.FromPosition(200, 150),
+                    CheckpointTag.FromPosition(40, 20))
+                    });
             Assert.AreEqual(0, _consumer.HandledMessages.OfType<ClientMessage.WriteEvents>().Count());
         }
 
@@ -84,8 +101,12 @@ namespace EventStore.Projections.Core.Tests.Services.core_projection.emitted_str
         public void correct_stream_id_is_set_on_write_events_message()
         {
             _stream.EmitEvents(
-                new[] { new EmittedEvent("test_stream", Guid.NewGuid(), "type", "data",
-                CheckpointTag.FromPosition(200, 150), CheckpointTag.FromPosition(100, 50)) });
+                new[]
+                    {
+                        new EmittedDataEvent(
+                    "test_stream", Guid.NewGuid(), "type", "data", null, CheckpointTag.FromPosition(200, 150),
+                    CheckpointTag.FromPosition(100, 50))
+                    });
             Assert.AreEqual("test_stream", _consumer.HandledMessages.OfType<ClientMessage.WriteEvents>().Single().EventStreamId);
         }
 
@@ -93,13 +114,16 @@ namespace EventStore.Projections.Core.Tests.Services.core_projection.emitted_str
         public void metadata_include_commit_and_prepare_positions()
         {
             _stream.EmitEvents(
-                new[] { new EmittedEvent("test_stream", Guid.NewGuid(), "type", "data",
-                CheckpointTag.FromPosition(200, 150), CheckpointTag.FromPosition(100, 50)) });
+                new[]
+                    {
+                        new EmittedDataEvent(
+                    "test_stream", Guid.NewGuid(), "type", "data", null, CheckpointTag.FromPosition(200, 150),
+                    CheckpointTag.FromPosition(100, 50))
+                    });
             var metaData =
-                _consumer.HandledMessages.OfType<ClientMessage.WriteEvents>().Single().Events[0].Metadata.ParseJson
-                    <CheckpointTag>();
-            Assert.AreEqual(200, metaData.CommitPosition);
-            Assert.AreEqual(150, metaData.PreparePosition);
+                _consumer.HandledMessages.OfType<ClientMessage.WriteEvents>().Single().Events[0].Metadata.ParseCheckpointTagVersionExtraJson(default(ProjectionVersion));
+            Assert.AreEqual(200, metaData.Tag.CommitPosition);
+            Assert.AreEqual(150, metaData.Tag.PreparePosition);
         }
 
     }

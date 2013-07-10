@@ -4,6 +4,7 @@ using System.IO;
 using System.Net;
 using EventStore.ClientAPI;
 using System.Linq;
+using EventStore.ClientAPI.Common.Log;
 
 namespace EventStore.Padmin
 {
@@ -32,20 +33,20 @@ namespace EventStore.Padmin
             Log("commands available : ");
             Log(Environment.NewLine);
 
-            Log("enable <projection-name>");
-            Log("disable <projection-name>");
+            Log("enable <projection-name> [<login> <password>]");
+            Log("disable <projection-name> [<login> <password>]");
 
-            Log("create <onetime | adhoc | continuous | persistent> <projection-name> <query file>");
-            Log("list <all | onetime | adhoc | continuous | persistent>");
+            Log("create <onetime | adhoc | continuous | persistent> <projection-name> <query file> [<login> <password>]");
+            Log("list <all | onetime | adhoc | continuous | persistent> [<login> <password>]");
 
-            Log("status <projection-name>");
-            Log("state <projection-name>");
-            Log("statistics <projection-name>");
+            Log("status <projection-name> [<login> <password>]");
+            Log("state <projection-name> [<login> <password>]");
+            Log("statistics <projection-name> [<login> <password>]");
 
-            Log("show-query <projection-name>");
-            Log("update-query <projection-name> <query file>");
+            Log("show-query <projection-name> [<login> <password>]");
+            Log("update-query <projection-name> <query file> [<login> <password>]");
 
-            Log("delete <projection-name>");
+            Log("delete <projection-name> [<login> <password>]");
         }
 
         private static void RegisterCommands()
@@ -76,7 +77,7 @@ namespace EventStore.Padmin
                 var port = int.Parse(config["http-port"]);
                 var endPoint = new IPEndPoint(ip, port);
 
-                var manager = new ProjectionsManager(endPoint);
+                var manager = new ProjectionsManager(new ConsoleLogger(), endPoint);
                 Execute(manager, args);
                 return true;
             }
@@ -121,7 +122,7 @@ namespace EventStore.Padmin
             }
             catch (Exception e)
             {
-                Log("Config file failed to load ({0})" +
+                Log("Config file failed to load ({0}).\n" +
                     "Should be located near exe file, named 'padmin.esconfig', key=value formatted). Using defaults",
                     e.Message);
 

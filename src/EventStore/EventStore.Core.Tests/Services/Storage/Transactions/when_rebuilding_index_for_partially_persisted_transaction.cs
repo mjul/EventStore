@@ -29,6 +29,7 @@ using System;
 using System.IO;
 using System.Text;
 using System.Threading;
+using EventStore.Common.Utils;
 using EventStore.Core.Data;
 using EventStore.Core.DataStructures;
 using EventStore.Core.Index;
@@ -61,12 +62,14 @@ namespace EventStore.Core.Tests.Services.Storage.Transactions
 
             ReadIndex = new ReadIndex(new NoopPublisher(),
                                       2,
-                                      () => new TFChunkSequentialReader(Db, WriterChecksum, 0),
-                                      () => new TFChunkReader(Db, WriterChecksum),
+                                      2,
+                                      () => new TFChunkReader(Db, WriterCheckpoint, 0),
                                       TableIndex,
                                       new ByLengthHasher(),
-                                      new NoLRUCache<string, StreamCacheInfo>());
-            ReadIndex.Build();
+                                      new NoLRUCache<string, StreamCacheInfo>(),
+                                      additionalCommitChecks: true, 
+                                      metastreamMaxCount: 1);
+            ReadIndex.Init(WriterCheckpoint.Read(), ChaserCheckpoint.Read());
         }
 
         protected override void WriteTestScenario()
@@ -87,7 +90,7 @@ namespace EventStore.Core.Tests.Services.Storage.Transactions
             {
                 var result = ReadIndex.ReadEvent("ES", i);
                 Assert.AreEqual(ReadEventResult.Success, result.Result);
-                Assert.AreEqual(Encoding.UTF8.GetBytes("data" + i), result.Record.Data);
+                Assert.AreEqual(Helper.UTF8NoBom.GetBytes("data" + i), result.Record.Data);
             }
         }
     }

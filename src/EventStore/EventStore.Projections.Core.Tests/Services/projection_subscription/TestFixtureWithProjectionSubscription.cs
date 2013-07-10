@@ -28,8 +28,8 @@
 
 using System;
 using EventStore.Core.Bus;
+using EventStore.Core.Services.TimerService;
 using EventStore.Core.Tests.Bus.Helpers;
-using EventStore.Core.Tests.Fakes;
 using EventStore.Projections.Core.Messages;
 using EventStore.Projections.Core.Services;
 using EventStore.Projections.Core.Services.Processing;
@@ -40,40 +40,49 @@ namespace EventStore.Projections.Core.Tests.Services.projection_subscription
     public abstract class TestFixtureWithProjectionSubscription
     {
         protected Guid _projectionCorrelationId;
-        protected TestHandler<ProjectionSubscriptionMessage.CommittedEventReceived> _eventHandler;
-        protected TestHandler<ProjectionSubscriptionMessage.CheckpointSuggested> _checkpointHandler;
-        protected TestHandler<ProjectionSubscriptionMessage.ProgressChanged> _progressHandler;
-        protected TestHandler<ProjectionSubscriptionMessage.EofReached> _eofHandler;
-        protected IProjectionSubscription _subscription;
-        protected EventReader ForkedReader;
-        protected FakePublisher _bus;
+        protected TestHandler<EventReaderSubscriptionMessage.CommittedEventReceived> _eventHandler;
+        protected TestHandler<EventReaderSubscriptionMessage.CheckpointSuggested> _checkpointHandler;
+        protected TestHandler<EventReaderSubscriptionMessage.ProgressChanged> _progressHandler;
+        protected TestHandler<EventReaderSubscriptionMessage.NotAuthorized> _notAuthorizedHandler;
+        protected TestHandler<EventReaderSubscriptionMessage.EofReached> _eofHandler;
+        protected IReaderSubscription _subscription;
+        protected IEventReader ForkedReader;
+        protected InMemoryBus _bus;
         protected Action<QuerySourceProcessingStrategyBuilder> _source = null;
         protected int _checkpointUnhandledBytesThreshold;
-        protected CheckpointStrategy _checkpointStrategy;
+        protected int _checkpointProcessedEventsThreshold;
+        protected IReaderStrategy _readerStrategy;
 
         [SetUp]
         public void setup()
         {
             _checkpointUnhandledBytesThreshold = 1000;
+            _checkpointProcessedEventsThreshold = 2000;
             Given();
-            _bus = new FakePublisher();
+            _bus = new InMemoryBus("bus");
             _projectionCorrelationId = Guid.NewGuid();
-            _eventHandler = new TestHandler<ProjectionSubscriptionMessage.CommittedEventReceived>();
-            _checkpointHandler = new TestHandler<ProjectionSubscriptionMessage.CheckpointSuggested>();
-            _progressHandler = new TestHandler<ProjectionSubscriptionMessage.ProgressChanged>();
-            _eofHandler = new TestHandler<ProjectionSubscriptionMessage.EofReached>();
-            _checkpointStrategy = CreateCheckpointStrategy();
+            _eventHandler = new TestHandler<EventReaderSubscriptionMessage.CommittedEventReceived>();
+            _checkpointHandler = new TestHandler<EventReaderSubscriptionMessage.CheckpointSuggested>();
+            _progressHandler = new TestHandler<EventReaderSubscriptionMessage.ProgressChanged>();
+            _notAuthorizedHandler = new TestHandler<EventReaderSubscriptionMessage.NotAuthorized>();
+            _eofHandler = new TestHandler<EventReaderSubscriptionMessage.EofReached>();
+
+            _bus.Subscribe(_eventHandler);
+            _bus.Subscribe(_checkpointHandler);
+            _bus.Subscribe(_progressHandler);
+            _bus.Subscribe(_eofHandler);
+            _readerStrategy = CreateCheckpointStrategy().ReaderStrategy;
             _subscription = CreateProjectionSubscription();
 
 
             When();
         }
 
-        protected virtual IProjectionSubscription CreateProjectionSubscription()
+        protected virtual IReaderSubscription CreateProjectionSubscription()
         {
-            return new ProjectionSubscription(
-                _projectionCorrelationId, Guid.NewGuid(), CheckpointTag.FromPosition(0, -1), _eventHandler, _checkpointHandler,
-                _progressHandler, _eofHandler, _checkpointStrategy, _checkpointUnhandledBytesThreshold);
+            return new ReaderSubscription(
+                _bus, _projectionCorrelationId, _readerStrategy.PositionTagger.MakeZeroCheckpointTag(), _readerStrategy,
+                _checkpointUnhandledBytesThreshold, _checkpointProcessedEventsThreshold);
         }
 
         protected virtual void Given()
@@ -85,17 +94,21 @@ namespace EventStore.Projections.Core.Tests.Services.projection_subscription
         protected virtual CheckpointStrategy CreateCheckpointStrategy()
         {
             var result = new CheckpointStrategy.Builder();
+            var readerBuilder = new ReaderStrategy.Builder();
             if (_source != null)
             {
+                _source(readerBuilder);
                 _source(result);
             }
             else
             {
+                readerBuilder.FromAll();
+                readerBuilder.AllEvents();
                 result.FromAll();
                 result.AllEvents();
-                result.SetEmitStateUpdated();
             }
-            return result.Build(ProjectionConfig.GetTest());
+            var config = ProjectionConfig.GetTest();
+            return result.Build(config, null, readerBuilder.Build(new RealTimeProvider(), runAs: null));
         }
     }
 }

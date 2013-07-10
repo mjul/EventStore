@@ -29,6 +29,7 @@
 using System;
 using System.Net;
 using System.Net.Sockets;
+using EventStore.ClientAPI.Common.Utils;
 
 namespace EventStore.ClientAPI.Transport.Tcp
 {
@@ -51,13 +52,29 @@ namespace EventStore.ClientAPI.Transport.Tcp
             return socketArgs;
         }
 
-        public TcpConnection ConnectTo(IPEndPoint remoteEndPoint, 
-                                            Action<TcpConnection> onConnectionEstablished = null,
-                                            Action<TcpConnection, SocketError> onConnectionFailed = null)
+        public ITcpConnection ConnectTo(ILogger log, 
+                                        Guid connectionId,
+                                        IPEndPoint remoteEndPoint, 
+                                        bool ssl,
+                                        string targetHost,
+                                        bool validateServer,
+                                        Action<ITcpConnection> onConnectionEstablished = null,
+                                        Action<ITcpConnection, SocketError> onConnectionFailed = null,
+                                        Action<ITcpConnection, SocketError> onConnectionClosed = null)
         {
-            if (remoteEndPoint == null) 
-                throw new ArgumentNullException("remoteEndPoint");
-            return TcpConnection.CreateConnectingTcpConnection(remoteEndPoint, this, onConnectionEstablished, onConnectionFailed);
+            Ensure.NotNull(remoteEndPoint, "remoteEndPoint");
+            if (ssl)
+            {
+                Ensure.NotNullOrEmpty(targetHost, "targetHost");
+                return TcpConnectionSsl.CreateConnectingConnection(log, connectionId, remoteEndPoint,
+                                                                   targetHost, validateServer, 
+                                                                   this, onConnectionEstablished, onConnectionFailed, onConnectionClosed);
+            }
+            else
+            {
+                return TcpConnection.CreateConnectingConnection(log, connectionId, remoteEndPoint,
+                                                                this, onConnectionEstablished, onConnectionFailed, onConnectionClosed);
+            }
         }
 
         internal void InitConnect(IPEndPoint serverEndPoint,
@@ -111,12 +128,7 @@ namespace EventStore.ClientAPI.Transport.Tcp
             var callbacks = (CallbacksToken)socketArgs.UserToken;
             var onConnectionFailed = callbacks.OnConnectionFailed;
 
-            try {
-               socketArgs.AcceptSocket.Close(TcpConfiguration.SocketCloseTimeoutMs);
-            }
-            catch(Exception)
-            {
-            }
+            Helper.EatException(() => socketArgs.AcceptSocket.Close(TcpConfiguration.SocketCloseTimeoutMs));
 
             socketArgs.AcceptSocket = null;
             callbacks.Reset();

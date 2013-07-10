@@ -28,6 +28,7 @@
 
 using System;
 using System.Globalization;
+using EventStore.Projections.Core.Services;
 using EventStore.Projections.Core.Services.Processing;
 using NUnit.Framework;
 
@@ -39,12 +40,12 @@ namespace EventStore.Projections.Core.Tests.Services.projections_manager.v8
         protected override void Given()
         {
             _projection = @"
-                fromAll().whenAny(
+                fromAll().when({$any: 
                     function(state, event) {
                         state.count = state.count + 1;
                         log(state.count);
                         return state;
-                    });
+                    }});
             ";
             _state = @"{""count"": 0}";
         }
@@ -65,7 +66,7 @@ namespace EventStore.Projections.Core.Tests.Services.projections_manager.v8
             Assert.AreEqual(@"2", _logged[1]);
         }
 
-        [Test, Category("v8"), Ignore]
+        [Test, Category("v8"), Category("Manual"), Ignore]
         public void can_handle_million_events()
         {
             for (var i = 0; i < 1000000; i++)

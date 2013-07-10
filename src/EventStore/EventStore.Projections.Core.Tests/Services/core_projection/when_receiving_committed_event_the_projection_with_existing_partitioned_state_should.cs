@@ -29,9 +29,10 @@
 using System;
 using System.Linq;
 using System.Text;
+using EventStore.Core.Data;
 using EventStore.Projections.Core.Messages;
-using EventStore.Projections.Core.Services.Processing;
 using NUnit.Framework;
+using ResolvedEvent = EventStore.Projections.Core.Services.Processing.ResolvedEvent;
 
 namespace EventStore.Projections.Core.Tests.Services.core_projection
 {
@@ -49,21 +50,20 @@ namespace EventStore.Projections.Core.Tests.Services.core_projection
                     source.FromAll();
                     source.AllEvents();
                     source.SetByStream();
-                    source.SetEmitStateUpdated();
                 };
             TicksAreHandledImmediately();
-            NoStream("$projections-projection-state");
+            NoStream("$projections-projection-result");
             NoStream("$projections-projection-order");
             AllWritesToSucceed("$projections-projection-order");
             ExistingEvent(
                 "$projections-projection-partitions", "PartitionCreated",
-                @"{""CommitPosition"": 100, ""PreparePosition"": 50}", "account-01");
+                @"{""c"": 100, ""p"": 50}", "account-01");
             ExistingEvent(
-                "$projections-projection-account-01-state", "StateUpdated",
-                @"{""CommitPosition"": 100, ""PreparePosition"": 50}", _testProjectionState);
+                "$projections-projection-account-01-result", "Result",
+                @"{""c"": 100, ""p"": 50}", _testProjectionState);
             ExistingEvent(
-                "$projections-projection-checkpoint", "ProjectionCheckpoint",
-                @"{""CommitPosition"": 100, ""PreparePosition"": 50}", _testProjectionState);
+                "$projections-projection-checkpoint", "$ProjectionCheckpoint",
+                @"{""c"": 100, ""p"": 50}", _testProjectionState);
             AllWritesSucceed();
         }
 
@@ -73,16 +73,16 @@ namespace EventStore.Projections.Core.Tests.Services.core_projection
             _eventId = Guid.NewGuid();
             _consumer.HandledMessages.Clear();
             _coreProjection.Handle(
-                ProjectionSubscriptionMessage.CommittedEventReceived.Sample(
-                    Guid.Empty, _subscriptionId, new EventPosition(120, 110), "account-01", 2, false,
-                    ResolvedEvent.Sample(
-                        _eventId, "handle_this_type", false, Encoding.UTF8.GetBytes("data1"),
-                        Encoding.UTF8.GetBytes("metadata")), 0));
+                EventReaderSubscriptionMessage.CommittedEventReceived.Sample(
+                    new ResolvedEvent(
+                        "account-01", 2, "account-01", 2, false, new TFPos(120, 110), _eventId,
+                        "handle_this_type", false, "data1", "metadata"), _subscriptionId, 0));
             _coreProjection.Handle(
-                ProjectionSubscriptionMessage.CommittedEventReceived.Sample(
-                    Guid.Empty, _subscriptionId, new EventPosition(160, 150), "account-01", 3, false,
-                    ResolvedEvent.Sample(
-                        _eventId, "append", false, Encoding.UTF8.GetBytes("$"), Encoding.UTF8.GetBytes("metadata")), 1));
+                EventReaderSubscriptionMessage.CommittedEventReceived.Sample(
+                    new ResolvedEvent(
+                        "account-01", 3, "account-01", 3, false, new TFPos(160, 150), _eventId, "append", false,
+                        "$", "metadata"), 
+                    _subscriptionId, 1));
         }
 
         [Test]

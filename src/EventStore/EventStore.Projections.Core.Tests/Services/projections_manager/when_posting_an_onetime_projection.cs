@@ -26,7 +26,10 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 // 
 
+using System;
+using System.Collections.Generic;
 using System.Linq;
+using EventStore.Core.Messages;
 using EventStore.Core.Messaging;
 using EventStore.Projections.Core.Messages;
 using NUnit.Framework;
@@ -36,11 +39,13 @@ namespace EventStore.Projections.Core.Tests.Services.projections_manager
     [TestFixture]
     public class when_posting_an_onetime_projection: TestFixtureWithProjectionCoreAndManagementServices
     {
-        protected override void When()
+        protected override IEnumerable<WhenStep> When()
         {
-            _manager.Handle(
-                new ProjectionManagementMessage.Post(
-                    new PublishEnvelope(_bus), @"fromAll().whenAny(function(s,e){return s;});", enabled: true));
+            yield return (new SystemMessage.BecomeMaster(Guid.NewGuid()));
+            yield return
+                (new ProjectionManagementMessage.Post(
+                    new PublishEnvelope(_bus), ProjectionManagementMessage.RunAs.Anonymous,
+                    @"fromAll().whenAny(function(s,e){return s;});", enabled: true));
         }
 
         [Test, Category("v8")]

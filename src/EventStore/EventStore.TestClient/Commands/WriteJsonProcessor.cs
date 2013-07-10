@@ -29,10 +29,11 @@ using System;
 using System.Diagnostics;
 using System.Net.Sockets;
 using System.Text;
+using EventStore.Common.Utils;
 using EventStore.Core.Data;
 using EventStore.Core.Messages;
-using EventStore.Core.Services.Transport.Http.Codecs;
 using EventStore.Core.Services.Transport.Tcp;
+using EventStore.Transport.Http.Codecs;
 
 namespace EventStore.TestClient.Commands
 {
@@ -70,10 +71,10 @@ namespace EventStore.TestClient.Commands
                     new TcpClientMessageDto.NewEvent(Guid.NewGuid().ToByteArray(),
                                                      "JsonDataEvent",
                                                      true,
-                                                     Encoding.UTF8.GetBytes(data),
-                                                     Encoding.UTF8.GetBytes(metadata ?? string.Empty))
+                                                     Helper.UTF8NoBom.GetBytes(data),
+                                                     Helper.UTF8NoBom.GetBytes(metadata ?? string.Empty))
                 },
-                true);
+                false);
             var package = new TcpPackage(TcpCommand.WriteEvents, Guid.NewGuid(), writeDto.Serialize());
 
             var sw = new Stopwatch();
@@ -83,7 +84,7 @@ namespace EventStore.TestClient.Commands
                 context,
                 connectionEstablished: conn =>
                 {
-                    context.Log.Info("[{0}]: Writing...", conn.EffectiveEndPoint);
+                    context.Log.Info("[{0}, L{1}]: Writing...", conn.RemoteEndPoint, conn.LocalEndPoint);
                     sw.Start();
                     conn.EnqueueSend(package.AsByteArray());
                 },

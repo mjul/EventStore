@@ -39,9 +39,6 @@
     <OutputPath>..\..\..\bin\eventstore\release\x86\</OutputPath>
   </PropertyGroup>
   <ItemGroup>
-    <Compile Include="..\EventStore.Common\Properties\AssemblyVersion.cs">
-      <Link>Properties\AssemblyVersion.cs</Link>
-    </Compile>
     <Compile Include="Properties\AssemblyInfo.cs" />
   </ItemGroup>
   <ItemGroup>
@@ -60,6 +57,15 @@
     </Content>
     <Content Include="singlenode-web\chat.htm">
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </Content>
+    <Content Include="singlenode-web\admin.htm">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </Content>
+    <Content Include="singlenode-web\js\projections\ui\Ace.js">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="singlenode-web\js\projections\ui\Confirmation.js">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
     <Content Include="singlenode-web\query.htm">
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
@@ -392,9 +398,6 @@
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
     </Content>
     <Content Include="singlenode-web\external-host.htm">
-      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
-    </Content>
-    <Content Include="singlenode-web\health-charts.htm">
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
     </Content>
     <Content Include="singlenode-web\home.htm">
